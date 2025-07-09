@@ -1,0 +1,298 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neurosheaf"
+version = "0.1.0"
+description = "Persistent Sheaf Laplacians for Neural Network Similarity Analysis"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Neurosheaf Team", email = "contact@neurosheaf.org"},
+]
+maintainers = [
+    {name = "Neurosheaf Team", email = "contact@neurosheaf.org"},
+]
+keywords = [
+    "neural networks",
+    "similarity analysis", 
+    "persistent homology",
+    "sheaf theory",
+    "deep learning",
+    "topological data analysis",
+    "centered kernel alignment",
+    "spectral analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+requires-python = ">=3.8"
+dependencies = [
+    # Core dependencies
+    "torch>=2.0.0",           # FX tracer, CUDA support
+    "numpy>=1.21.0",          # Numerical operations
+    "scipy>=1.7.0",           # subspace_angles, sparse matrices
+    "networkx>=2.6",          # Graph operations
+    "matplotlib>=3.5.0",      # Static plots
+    "scikit-learn>=1.0",      # Utilities
+    "tqdm>=4.62.0",           # Progress bars
+    "PyYAML>=6.0",            # Configuration files
+    "psutil>=5.8.0",          # System monitoring
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-xdist>=3.0",
+    "pytest-benchmark>=4.0",
+    "pytest-mock>=3.10",
+    
+    # Code quality
+    "black>=22.0",
+    "isort>=5.0",
+    "flake8>=4.0",
+    "mypy>=0.950",
+    "pre-commit>=2.15",
+    
+    # Development tools
+    "ipython>=8.0",
+    "ipdb>=0.13",
+    "jupyter>=1.0",
+    "notebook>=6.4",
+]
+
+docs = [
+    # Documentation
+    "sphinx>=5.0",
+    "sphinx-rtd-theme>=1.0",
+    "nbsphinx>=0.8",
+    "myst-parser>=0.18",
+    "sphinx-autodoc-typehints>=1.19",
+    "sphinxcontrib-bibtex>=2.4",
+    
+    # Examples
+    "jupyter>=1.0",
+    "notebook>=6.4",
+]
+
+viz = [
+    # Visualization
+    "plotly>=5.0",
+    "dash>=2.0",
+    "kaleido>=0.2",           # For static image export
+    "seaborn>=0.11",          # Statistical plots
+    
+    # Interactive
+    "ipywidgets>=7.6",
+    "jupyter>=1.0",
+]
+
+gpu = [
+    # GPU acceleration
+    "cupy>=10.0",             # GPU arrays
+    "nvidia-ml-py>=11.0",     # GPU monitoring
+]
+
+external = [
+    # External integrations (optional)
+    "wandb>=0.13",            # Experiment tracking
+    "tensorboard>=2.8",       # TensorBoard logging
+    "hydra-core>=1.2",        # Configuration management
+]
+
+all = [
+    "plotly>=5.0",
+    "dash>=2.0", 
+    "kaleido>=0.2",
+    "seaborn>=0.11",
+    "ipywidgets>=7.6",
+    "jupyter>=1.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=22.0",
+    "sphinx>=5.0",
+    "cupy>=10.0",
+    "nvidia-ml-py>=11.0",
+    "wandb>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/neurosheaf/neurosheaf"
+Documentation = "https://neurosheaf.readthedocs.io/"
+Repository = "https://github.com/neurosheaf/neurosheaf"
+"Bug Tracker" = "https://github.com/neurosheaf/neurosheaf/issues"
+Changelog = "https://github.com/neurosheaf/neurosheaf/blob/main/CHANGELOG.md"
+
+[project.scripts]
+neurosheaf = "neurosheaf.cli:main"
+neurosheaf-dashboard = "neurosheaf.visualization.dashboard:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["neurosheaf*"]
+exclude = ["tests*", "docs*", "examples*", "benchmarks*"]
+
+[tool.setuptools.package-data]
+neurosheaf = [
+    "data/*.json",
+    "templates/*.html",
+    "static/css/*.css",
+    "static/js/*.js",
+]
+
+# Black configuration
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+# isort configuration
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["neurosheaf"]
+known_third_party = ["torch", "numpy", "scipy", "matplotlib", "networkx", "sklearn"]
+
+# pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+    "--tb=short",
+    "--cov=neurosheaf",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+    "--cov-fail-under=90",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "benchmark: marks tests as benchmarks",
+    "gpu: marks tests that require GPU",
+    "phase1: marks tests for Phase 1 (foundation)",
+    "phase2: marks tests for Phase 2 (CKA)",
+    "phase3: marks tests for Phase 3 (sheaf)",
+    "phase4: marks tests for Phase 4 (spectral)",
+    "phase5: marks tests for Phase 5 (visualization)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# mypy configuration
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+
+# Ignore missing imports for optional dependencies
+[[tool.mypy.overrides]]
+module = [
+    "plotly.*",
+    "dash.*",
+    "cupy.*",
+    "nvidia_ml_py.*",
+    "wandb.*",
+    "tensorboard.*",
+    "hydra.*",
+]
+ignore_missing_imports = true
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["neurosheaf"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/conftest.py",
+    "*/setup.py",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+# Ruff configuration (alternative to flake8)
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+"tests/*" = ["B018"]      # Allow expressions in tests

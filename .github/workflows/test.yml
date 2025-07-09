@@ -1,0 +1,217 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+        torch-version: ["2.0.0", "2.1.0"]
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[dev]"
+    
+    - name: Lint with flake8
+      run: |
+        flake8 neurosheaf tests --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 neurosheaf tests --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+    
+    - name: Format check with black
+      run: |
+        black --check neurosheaf tests
+    
+    - name: Import sorting check with isort
+      run: |
+        isort --check-only neurosheaf tests
+    
+    - name: Type check with mypy
+      run: |
+        mypy neurosheaf --ignore-missing-imports
+    
+    - name: Test with pytest
+      run: |
+        pytest tests/unit/ -v --cov=neurosheaf --cov-report=xml --cov-report=term-missing
+    
+    - name: Run Phase 1 tests
+      run: |
+        pytest tests/ -v -m phase1
+    
+    - name: Run integration tests
+      run: |
+        pytest tests/integration/ -v -m "not slow"
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: true
+
+  test-gpu:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[dev]"
+    
+    - name: Test GPU code paths (with CPU fallback)
+      run: |
+        pytest tests/ -v -m gpu --tb=short
+      env:
+        CUDA_VISIBLE_DEVICES: ""
+
+  performance-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[dev]"
+    
+    - name: Run performance tests
+      run: |
+        pytest tests/performance/ -v -m benchmark --tb=short
+    
+    - name: Run memory profiling tests
+      run: |
+        pytest tests/performance/ -v -m "not benchmark" --tb=short
+
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    
+    - name: Run security check with bandit
+      run: |
+        bandit -r neurosheaf -f json -o bandit-report.json || true
+        bandit -r neurosheaf
+    
+    - name: Run complexity check with radon
+      run: |
+        pip install radon
+        radon cc neurosheaf --min C
+        radon mi neurosheaf --min B
+    
+    - name: Check for vulnerabilities
+      run: |
+        pip install safety
+        safety check --json || true
+        safety check
+
+  docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[docs]"
+    
+    - name: Build documentation
+      run: |
+        cd docs
+        make html
+    
+    - name: Check documentation links
+      run: |
+        cd docs
+        make linkcheck
+
+  package-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+    
+    - name: Build package
+      run: |
+        python -m build
+    
+    - name: Check package
+      run: |
+        twine check dist/*
+    
+    - name: Test package installation
+      run: |
+        pip install dist/*.whl
+        python -c "import neurosheaf; print(neurosheaf.__version__)"
