@@ -423,6 +423,156 @@ def get_profile_manager() -> ProfileManager:
     return _profile_manager
 
 
+def get_mac_device_info() -> Dict[str, Any]:
+    """Get Mac-specific device information.
+    
+    Returns:
+        Dictionary with Mac hardware information
+    """
+    import platform
+    
+    info = {
+        'is_mac': platform.system() == "Darwin",
+        'is_apple_silicon': platform.processor() == "arm",
+        'machine': platform.machine(),
+        'processor': platform.processor(),
+        'platform': platform.platform()
+    }
+    
+    # MPS availability
+    if hasattr(torch.backends, 'mps'):
+        info['mps_available'] = torch.backends.mps.is_available()
+        info['mps_built'] = torch.backends.mps.is_built()
+    else:
+        info['mps_available'] = False
+        info['mps_built'] = False
+    
+    return info
+
+
+def get_mac_memory_info() -> Dict[str, float]:
+    """Get Mac-specific memory information.
+    
+    Returns:
+        Dictionary with memory usage information
+    """
+    import psutil
+    import platform
+    
+    # System memory
+    vm = psutil.virtual_memory()
+    memory_info = {
+        'system_total_gb': vm.total / (1024**3),
+        'system_available_gb': vm.available / (1024**3),
+        'system_used_gb': vm.used / (1024**3),
+        'system_percent': vm.percent
+    }
+    
+    # Mac-specific memory information
+    is_apple_silicon = platform.processor() == "arm"
+    
+    if is_apple_silicon:
+        # Apple Silicon unified memory
+        memory_info['unified_memory'] = True
+        memory_info['memory_pressure'] = _get_mac_memory_pressure()
+        
+        # MPS memory if available
+        if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            try:
+                memory_info['mps_allocated_gb'] = torch.mps.current_allocated_memory() / (1024**3)
+                memory_info['mps_driver_allocated_gb'] = torch.mps.driver_allocated_memory() / (1024**3)
+            except:
+                memory_info['mps_allocated_gb'] = 0.0
+                memory_info['mps_driver_allocated_gb'] = 0.0
+    else:
+        # Intel Mac
+        memory_info['unified_memory'] = False
+        memory_info['memory_pressure'] = 'unknown'
+    
+    return memory_info
+
+
+def _get_mac_memory_pressure() -> str:
+    """Get Mac memory pressure status.
+    
+    Returns:
+        Memory pressure status string
+    """
+    try:
+        import subprocess
+        result = subprocess.run(['memory_pressure'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            # Parse memory pressure output
+            output = result.stdout.lower()
+            if 'critical' in output:
+                return 'critical'
+            elif 'warn' in output:
+                return 'warning'
+            else:
+                return 'normal'
+    except:
+        pass
+    
+    return 'unknown'
+
+
+def profile_mac_memory(func: Callable) -> Callable:
+    """Mac-specific memory profiling decorator.
+    
+    Args:
+        func: Function to profile
+        
+    Returns:
+        Decorated function with Mac-specific memory profiling
+    """
+    import functools
+    import time
+    import platform
+    
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if platform.system() != "Darwin":
+            # Fall back to regular profiling on non-Mac systems
+            return profile_memory()(func)(*args, **kwargs)
+        
+        logger = get_logger("neurosheaf.profiling.mac")
+        
+        # Get initial memory state
+        initial_memory = get_mac_memory_info()
+        
+        # Clear caches
+        if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        
+        # Execute function
+        start_time = time.time()
+        try:
+            result = func(*args, **kwargs)
+        finally:
+            end_time = time.time()
+            
+            # Get final memory state
+            final_memory = get_mac_memory_info()
+            
+            # Calculate memory usage
+            memory_increase = final_memory['system_used_gb'] - initial_memory['system_used_gb']
+            
+            # Log Mac-specific profiling info
+            logger.info(f"Mac Memory Profiling - {func.__name__}:")
+            logger.info(f"  Execution time: {end_time - start_time:.2f}s")
+            logger.info(f"  Memory increase: {memory_increase:.2f}GB")
+            logger.info(f"  Unified memory: {final_memory.get('unified_memory', 'unknown')}")
+            logger.info(f"  Memory pressure: {final_memory.get('memory_pressure', 'unknown')}")
+            
+            if 'mps_allocated_gb' in final_memory:
+                mps_increase = final_memory['mps_allocated_gb'] - initial_memory.get('mps_allocated_gb', 0)
+                logger.info(f"  MPS memory increase: {mps_increase:.2f}GB")
+        
+        return result
+    
+    return wrapper
+
+
 def benchmark_function(
     func: Callable,
     args: Tuple = (),

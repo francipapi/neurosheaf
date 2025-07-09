@@ -17,7 +17,7 @@ L = Y @ Y.T  # Raw activations only!
 ```
 
 ### Performance Targets
-- **Memory**: <3GB for ResNet50 analysis (500× improvement from 1.5TB baseline)
+- **Memory**: <3GB for ResNet50 analysis (7× improvement from 20GB baseline)
 - **Speed**: <5 minutes for complete analysis pipeline
 - **Sparse efficiency**: >90% memory savings vs dense matrices
 
@@ -183,4 +183,4 @@ ruff >= 0.1.0
 mypy >= 1.0.0
 ```
 
-The project requires strict adherence to the implementation plans and mathematical correctness to achieve the target 500× memory improvement over baseline approaches.
+The project requires strict adherence to the implementation plans and mathematical correctness to achieve the target 7× memory improvement over baseline approaches.

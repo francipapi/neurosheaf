@@ -13,13 +13,13 @@ Neurosheaf is a Python framework for analyzing neural network similarity using p
 - **Debiased CKA Computation**: Correct implementation without double-centering
 - **Automatic Architecture Analysis**: FX-based poset extraction works with any PyTorch model
 - **Robust Spectral Analysis**: Subspace tracking handles eigenvalue crossings
-- **Memory Efficient**: 500× memory reduction compared to baseline implementations
+- **Memory Efficient**: 7× memory reduction compared to baseline implementations
 - **Interactive Visualization**: Dashboard with log-scale support and WebGL rendering
 - **Production Ready**: Comprehensive testing, documentation, and CI/CD
 
 ## 📊 Performance
 
-- **Memory**: <3GB for ResNet50 analysis (vs 1.5TB baseline)
+- **Memory**: <3GB for ResNet50 analysis (vs 20GB baseline)
 - **Speed**: 20× faster Laplacian assembly
 - **Scalability**: Handles networks with 50+ layers
 - **GPU Support**: CUDA acceleration for large models
