@@ -42,8 +42,14 @@ pip install neurosheaf
 ### Development Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/neurosheaf/neurosheaf.git
 cd neurosheaf
+
+# Activate conda environment (REQUIRED)
+conda activate myenv
+
+# Install in development mode
 pip install -e ".[dev]"
 ```
 
@@ -119,6 +125,9 @@ Neurosheaf automatically handles:
 ### Setup Development Environment
 
 ```bash
+# Activate conda environment (REQUIRED)
+conda activate myenv
+
 # Install with development dependencies
 pip install -e ".[dev]"
 
@@ -139,6 +148,9 @@ mypy neurosheaf
 ### Running Tests
 
 ```bash
+# Activate conda environment first
+conda activate myenv
+
 # Run all tests
 make test
 
@@ -155,6 +167,9 @@ make test-coverage
 ### Code Quality
 
 ```bash
+# Activate conda environment first
+conda activate myenv
+
 # Run all quality checks
 make lint
 

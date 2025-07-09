@@ -23,17 +23,22 @@ Neurosheaf is a Python framework for neural network similarity analysis using pe
    cd neurosheaf
    ```
 
-2. **Install Dependencies**
+2. **Activate Conda Environment** (REQUIRED)
+   ```bash
+   conda activate myenv
+   ```
+
+3. **Install Dependencies**
    ```bash
    pip install -e ".[dev]"
    ```
 
-3. **Setup Pre-commit Hooks**
+4. **Setup Pre-commit Hooks**
    ```bash
    pre-commit install
    ```
 
-4. **Verify Installation**
+5. **Verify Installation**
    ```bash
    make test
    ```
@@ -173,6 +178,9 @@ Use pytest markers:
 ### Running Tests
 
 ```bash
+# Activate conda environment first
+conda activate myenv
+
 # All tests
 make test
 

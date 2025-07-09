@@ -23,26 +23,32 @@ L = Y @ Y.T  # Raw activations only!
 
 ## Development Commands
 
-Since the project is in planning phase, these commands should be implemented as part of Phase 1:
+**CRITICAL**: All commands must be run in the conda environment `myenv`:
+```bash
+conda activate myenv
+```
+
+Development commands for the project:
 
 ```bash
-# Setup (to be implemented in Phase 1)
+# Setup (Phase 1 complete)
+conda activate myenv
 pip install -e .
 pip install -r requirements-dev.txt
 
 # Testing (test-driven development approach)
-pytest -v                              # Run all tests
-pytest tests/phase{X}/ -v              # Run specific phase tests
-pytest tests/critical/ -v --tb=short   # Run critical functionality tests
-pytest -m "not slow" -v                # Skip slow tests during development
+conda activate myenv && pytest -v                              # Run all tests
+conda activate myenv && pytest tests/phase{X}/ -v              # Run specific phase tests
+conda activate myenv && pytest tests/critical/ -v --tb=short   # Run critical functionality tests
+conda activate myenv && pytest -m "not slow" -v                # Skip slow tests during development
 
-# Code quality (to be configured in Phase 1)
-black neurosheaf/
-ruff check neurosheaf/
-mypy neurosheaf/
+# Code quality (Phase 1 complete)
+conda activate myenv && black neurosheaf/
+conda activate myenv && ruff check neurosheaf/
+conda activate myenv && mypy neurosheaf/
 
 # Performance profiling (Phase 1 deliverable)
-python -m neurosheaf.utils.benchmarking
+conda activate myenv && python -m neurosheaf.utils.benchmarking
 ```
 
 ## Architecture Overview
@@ -95,9 +101,10 @@ Each phase has detailed implementation plans in `plan/phase{X}_*/implementation_
 - **Phase 7**: Production deployment with Docker and PyPI
 
 ### Test-Driven Development
+- **Environment first**: Always run `conda activate myenv` before any development
 - **Write tests first**: Start with critical tests from testing suites
-- **Test immediately**: Run tests after every significant code change
-- **Validate continuously**: Use `pytest -v` frequently during development
+- **Test immediately**: Run `conda activate myenv && pytest -v` after every significant code change
+- **Validate continuously**: Use `conda activate myenv && pytest -v` frequently during development
 - **Cover edge cases**: Implement edge case tests before they become issues
 
 ## Key Files to Reference
@@ -133,12 +140,13 @@ Each phase has detailed implementation plans in `plan/phase{X}_*/implementation_
 ## Implementation Workflow
 
 ### Starting New Code
-1. Read the specific phase implementation plan
-2. Review the testing suite requirements
-3. Implement critical tests first
-4. Follow the exact code patterns from plans
-5. Validate against mathematical properties
-6. Check performance targets
+1. **Activate environment**: Run `conda activate myenv` before starting
+2. Read the specific phase implementation plan
+3. Review the testing suite requirements
+4. Implement critical tests first
+5. Follow the exact code patterns from plans
+6. Validate against mathematical properties with `conda activate myenv && pytest -v`
+7. Check performance targets
 
 ### Common Pitfalls to Avoid
 - **Never pre-center data for CKA** (most critical error)
