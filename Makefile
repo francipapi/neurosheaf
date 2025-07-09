@@ -2,7 +2,7 @@
 # Use this file to run common development tasks
 
 # IMPORTANT: All commands assume conda environment 'myenv' is active
-# Run 'conda activate myenv' before using this Makefile
+# Run 'source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv' before using this Makefile
 
 # Variables
 CONDA_ENV = myenv
@@ -30,7 +30,7 @@ NC = \033[0m # No Color
 help:
 	@echo "$(BLUE)Neurosheaf Development Makefile$(NC)"
 	@echo ""
-	@echo "$(YELLOW)IMPORTANT: Run 'conda activate myenv' before using this Makefile$(NC)"
+	@echo "$(YELLOW)IMPORTANT: Run 'source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv' before using this Makefile$(NC)"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  $(GREEN)install$(NC)         Install package for development"

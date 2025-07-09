@@ -25,30 +25,31 @@ L = Y @ Y.T  # Raw activations only!
 
 **CRITICAL**: All commands must be run in the conda environment `myenv`:
 ```bash
-conda activate myenv
+# Proper conda activation method (required for AI agents)
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 ```
 
 Development commands for the project:
 
 ```bash
 # Setup (Phase 1 complete)
-conda activate myenv
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 pip install -e .
 pip install -r requirements-dev.txt
 
 # Testing (test-driven development approach)
-conda activate myenv && pytest -v                              # Run all tests
-conda activate myenv && pytest tests/phase{X}/ -v              # Run specific phase tests
-conda activate myenv && pytest tests/critical/ -v --tb=short   # Run critical functionality tests
-conda activate myenv && pytest -m "not slow" -v                # Skip slow tests during development
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -v                              # Run all tests
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/phase{X}/ -v              # Run specific phase tests
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/critical/ -v --tb=short   # Run critical functionality tests
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -m "not slow" -v                # Skip slow tests during development
 
 # Code quality (Phase 1 complete)
-conda activate myenv && black neurosheaf/
-conda activate myenv && ruff check neurosheaf/
-conda activate myenv && mypy neurosheaf/
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && black neurosheaf/
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && ruff check neurosheaf/
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && mypy neurosheaf/
 
 # Performance profiling (Phase 1 deliverable)
-conda activate myenv && python -m neurosheaf.utils.benchmarking
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && python -m neurosheaf.utils.benchmarking
 ```
 
 ## Architecture Overview

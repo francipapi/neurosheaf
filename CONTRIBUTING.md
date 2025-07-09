@@ -25,7 +25,7 @@ Neurosheaf is a Python framework for neural network similarity analysis using pe
 
 2. **Activate Conda Environment** (REQUIRED)
    ```bash
-   conda activate myenv
+   source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
    ```
 
 3. **Install Dependencies**
@@ -179,7 +179,7 @@ Use pytest markers:
 
 ```bash
 # Activate conda environment first
-conda activate myenv
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 
 # All tests
 make test

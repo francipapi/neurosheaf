@@ -6,9 +6,12 @@ These guidelines maximize implementation success for the Neurosheaf project acro
 ## Environment Setup
 **CRITICAL**: All scripts and commands must be run in the conda environment `myenv`:
 ```bash
-conda activate myenv
+# Proper conda activation method
+source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 ```
 Always verify you're in the correct environment before running any development commands, tests, or scripts.
+
+**For AI agents**: Use the full command with conda.sh sourcing since conda may not be initialized in the shell environment.
 
 ## Core Implementation Principles
 
@@ -27,7 +30,7 @@ Always verify you're in the correct environment before running any development c
 ### 3. **Test-Driven Development**
 - **Write tests first**: Start with critical tests from testing suites
 - **Test immediately**: Run tests after every significant code change
-- **Validate continuously**: Use `conda activate myenv && pytest -v` frequently during development
+- **Validate continuously**: Use `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -v` frequently during development
 - **Cover edge cases**: Implement edge case tests before they become issues
 
 ## Phase-Specific Critical Points
@@ -124,19 +127,19 @@ def compute_restriction(
 ## Implementation Workflow
 
 ### Starting a New Module
-1. **Activate environment**: Run `conda activate myenv` before starting
+1. **Activate environment**: Run `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv` before starting
 2. **Read the plan**: Study implementation_plan.md for the phase
 3. **Understand tests**: Review testing_suite.md requirements
 4. **Create skeleton**: Implement class/function signatures first
 5. **Write critical tests**: Implement tests from testing suite
 6. **Implement core logic**: Follow plan code examples exactly
-7. **Test continuously**: Run `conda activate myenv && pytest tests/` after each function
+7. **Test continuously**: Run `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/` after each function
 8. **Handle edge cases**: Implement edge case handling
 9. **Performance validate**: Check memory/speed requirements
 10. **Document thoroughly**: Add docstrings and examples
 
 ### Making Changes to Existing Code
-1. **Activate environment**: Run `conda activate myenv` before starting
+1. **Activate environment**: Run `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv` before starting
 2. **Read existing tests**: Understand what behavior is expected
 3. **Add new tests first**: For new functionality or bug fixes
 4. **Refactor carefully**: Ensure all existing tests still pass
@@ -144,9 +147,9 @@ def compute_restriction(
 6. **Update documentation**: Modify docstrings if API changes
 
 ### Debugging Strategy
-1. **Activate environment**: Run `conda activate myenv` before debugging
+1. **Activate environment**: Run `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv` before debugging
 2. **Check the plan**: Verify implementation matches specification
-3. **Test isolation**: Run `conda activate myenv && pytest tests/specific_test.py -v` to isolate issue
+3. **Test isolation**: Run `source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/specific_test.py -v` to isolate issue
 4. **Add logging**: Use logger to trace execution flow
 5. **Validate inputs**: Check tensor shapes, types, ranges
 6. **Mathematical check**: Verify algorithm against paper/reference
