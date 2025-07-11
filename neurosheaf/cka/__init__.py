@@ -1,14 +1,27 @@
 """CKA (Centered Kernel Alignment) implementation module.
 
-This module will contain the debiased CKA implementation with NO double-centering,
-adaptive sampling, and Nyström approximation for memory efficiency.
+This module contains the debiased CKA implementation with NO double-centering,
+baseline implementation for profiling, memory-efficient sampling strategies,
+and pairwise computation utilities.
 
-To be implemented in Phase 2.
+Phase 1 & Phase 2 Week 3-4 implementation complete.
 """
 
-# Placeholder for Phase 2 implementation
-# from .debiased import DebiasedCKA
-# from .nystrom import NystromCKA
-# from .sampling import AdaptiveSampler
+# Core CKA implementations
+from .debiased import DebiasedCKA
+from .baseline import BaselineCKA
 
-__all__ = []  # Will be populated in Phase 2
+# Phase 2 Week 3 implementations
+from .sampling import AdaptiveSampler
+from .pairwise import PairwiseCKA
+
+# Phase 2 Week 4 implementations
+from .nystrom import NystromCKA
+
+__all__ = [
+    "DebiasedCKA",
+    "BaselineCKA",
+    "AdaptiveSampler", 
+    "PairwiseCKA",
+    "NystromCKA",
+]

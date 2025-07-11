@@ -95,10 +95,9 @@ class TestMemoryBenchmarks:
             result = ProfileResult(
                 function_name="test_function",
                 execution_time=1.0,
-                cpu_memory_peak_mb=100.0,
-                cpu_memory_current_mb=90.0,
-                gpu_memory_peak_mb=0.0,
-                gpu_memory_current_mb=0.0
+                measurements={},
+                primary_cpu_memory_mb=100.0,
+                primary_gpu_memory_mb=0.0
             )
             manager.add_result(result)
             manager.clear_results()

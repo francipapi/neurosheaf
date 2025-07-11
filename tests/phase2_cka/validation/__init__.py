@@ -1,0 +1,1 @@
+"""Validation tests for Phase 2 CKA mathematical properties."""

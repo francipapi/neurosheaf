@@ -34,9 +34,9 @@ except ImportError:
     DebiasedCKA = None
 
 try:
-    from .sheaf import SheafBuilder
+    from .sheaf import FXPosetExtractor
 except ImportError:
-    SheafBuilder = None
+    FXPosetExtractor = None
 
 # Import utilities (implemented in Phase 1)
 from .utils.logging import setup_logger
@@ -58,7 +58,7 @@ __all__ = [
     # Main API (to be implemented)
     "NeurosheafAnalyzer",
     "DebiasedCKA", 
-    "SheafBuilder",
+    "FXPosetExtractor",
     # Utilities
     "setup_logger",
     "profile_memory",

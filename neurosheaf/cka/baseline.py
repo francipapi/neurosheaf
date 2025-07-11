@@ -5,16 +5,17 @@ designed for establishing performance baselines and identifying optimization
 opportunities. This is used for Phase 1 Week 2 baseline measurements.
 """
 
-import torch
-import torch.nn as nn
-from typing import Dict, List, Tuple, Optional, Union
-import numpy as np
-import platform
 import time
 import psutil
+from typing import Dict, List, Tuple, Optional, Union
 
-from ..utils.logging import setup_logger
+import numpy as np
+import torch
+import torch.nn as nn
+
+from ..utils.device import detect_optimal_device, get_device_info, clear_device_cache
 from ..utils.exceptions import ValidationError, ComputationError, MemoryError
+from ..utils.logging import setup_logger
 from ..utils.profiling import profile_memory, profile_time
 
 
@@ -46,13 +47,14 @@ class BaselineCKA:
             enable_detailed_profiling: Whether to enable detailed profiling
         """
         self.logger = setup_logger("neurosheaf.cka.baseline")
-        self.device = self._detect_device(device)
+        self.device = detect_optimal_device(device)
         self.store_intermediates = store_intermediates
         self.enable_detailed_profiling = enable_detailed_profiling
         
-        # Mac-specific initialization
-        self.is_mac = platform.system() == "Darwin"
-        self.is_apple_silicon = platform.processor() == "arm"
+        # Device information
+        self.device_info = get_device_info()
+        self.is_mac = self.device_info['is_mac']
+        self.is_apple_silicon = self.device_info['is_apple_silicon']
         
         # Storage for intermediate results and profiling data
         self.intermediates = {}
@@ -62,23 +64,6 @@ class BaselineCKA:
         if self.is_mac:
             self.logger.info(f"Mac baseline profiling: Apple Silicon = {self.is_apple_silicon}")
     
-    def _detect_device(self, device: Optional[Union[str, torch.device]] = None) -> torch.device:
-        """Detect optimal device for Mac and other platforms."""
-        if device is not None:
-            return torch.device(device)
-        
-        # Mac-specific device detection
-        if platform.system() == "Darwin":
-            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                return torch.device("mps")
-            else:
-                return torch.device("cpu")
-        
-        # Other platforms
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        
-        return torch.device("cpu")
     
     @profile_memory(memory_threshold_mb=1000.0, log_results=True)
     def compute_baseline_cka_matrix(
@@ -100,12 +85,19 @@ class BaselineCKA:
         """
         self.logger.info("Starting baseline CKA matrix computation...")
         
+        # Validate inputs
+        if not activations:
+            raise ValidationError("Activations dictionary cannot be empty")
+        
         # Record initial state
         initial_memory = self._get_memory_usage()
         start_time = time.time()
         
         layer_names = list(activations.keys())
         n_layers = len(layer_names)
+        
+        if n_layers < 2:
+            raise ValidationError("Need at least 2 layers to compute CKA matrix")
         
         # Move all activations to device (memory-intensive)
         device_activations = {}
@@ -152,11 +144,7 @@ class BaselineCKA:
             'n_layers': n_layers,
             'total_parameters': sum(act.numel() for act in activations.values()),
             'device': str(self.device),
-            'mac_specific': {
-                'is_mac': self.is_mac,
-                'is_apple_silicon': self.is_apple_silicon,
-                'unified_memory': self.is_apple_silicon
-            }
+            'device_info': self.device_info
         }
         
         self.profiling_data = profiling_data
@@ -310,13 +298,15 @@ class BaselineCKA:
         
         data = self.profiling_data
         
+        device_info = data['device_info']
         report = [
             "Neurosheaf Baseline CKA Performance Report",
             "=" * 50,
             "",
             f"Device: {data['device']}",
-            f"Mac System: {data['mac_specific']['is_mac']}",
-            f"Apple Silicon: {data['mac_specific']['is_apple_silicon']}",
+            f"Platform: {device_info['platform']}",
+            f"Mac System: {device_info['is_mac']}",
+            f"Apple Silicon: {device_info['is_apple_silicon']}",
             "",
             "Memory Usage:",
             f"  Initial: {data['initial_memory_gb']:.2f} GB",
@@ -352,10 +342,7 @@ class BaselineCKA:
     def clear_intermediates(self):
         """Clear stored intermediate results to free memory."""
         self.intermediates.clear()
-        if self.device.type == 'cuda':
-            torch.cuda.empty_cache()
-        elif self.device.type == 'mps':
-            torch.mps.empty_cache()
+        clear_device_cache(self.device)
     
     def get_memory_breakdown(self) -> Dict[str, float]:
         """Get detailed memory breakdown by component.

@@ -44,7 +44,7 @@ class NeurosheafError(Exception):
         """
         super().__init__(message)
         self.message = message
-        self.context = context or {}
+        self.context = self._validate_context(context or {})
         self.recoverable = recoverable
     
     def __str__(self) -> str:
@@ -63,6 +63,78 @@ class NeurosheafError(Exception):
             "context": self.context,
             "recoverable": self.recoverable,
         }
+    
+    def _validate_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and sanitize context dictionary.
+        
+        Args:
+            context: Context dictionary to validate
+            
+        Returns:
+            Validated context dictionary
+        """
+        if not isinstance(context, dict):
+            return {"invalid_context": f"Context must be dict, got {type(context).__name__}"}
+        
+        # Check for extremely large contexts
+        max_context_size = 1000  # Maximum number of context items
+        max_value_size = 10000   # Maximum size of string representations
+        
+        if len(context) > max_context_size:
+            return {
+                "context_truncated": f"Context too large ({len(context)} items > {max_context_size})",
+                "context_sample": dict(list(context.items())[:10])  # Show first 10 items
+            }
+        
+        # Check for circular references
+        visited_objects = set()
+        
+        def check_circular_reference(obj, path=""):
+            """Check for circular references in nested objects."""
+            obj_id = id(obj)
+            if obj_id in visited_objects:
+                return True
+            
+            visited_objects.add(obj_id)
+            
+            # Check nested structures
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if check_circular_reference(v, f"{path}.{k}"):
+                        return True
+            elif isinstance(obj, (list, tuple)):
+                for i, v in enumerate(obj):
+                    if check_circular_reference(v, f"{path}[{i}]"):
+                        return True
+            
+            visited_objects.remove(obj_id)
+            return False
+        
+        validated_context = {}
+        for key, value in context.items():
+            # Sanitize key
+            if not isinstance(key, str):
+                key = str(key)
+            if len(key) > 100:
+                key = key[:97] + "..."
+            
+            # Check for circular references
+            if check_circular_reference(value):
+                validated_context[key] = f"<circular reference detected in {type(value).__name__}>"
+                continue
+            
+            # Sanitize value
+            try:
+                str_value = str(value)
+                if len(str_value) > max_value_size:
+                    validated_context[key] = str_value[:max_value_size-3] + "..."
+                else:
+                    validated_context[key] = value
+            except Exception:
+                # If value can't be converted to string, use type info
+                validated_context[key] = f"<{type(value).__name__} object>"
+        
+        return validated_context
 
 
 class ValidationError(NeurosheafError):
@@ -338,6 +410,99 @@ def validate_tensor_shape(tensor, expected_shape: tuple, name: str = "tensor"):
                 expected=expected,
                 actual=actual
             )
+
+
+def validate_tensor_values(tensor, name: str = "tensor", allow_nan: bool = False, allow_inf: bool = False):
+    """Validate tensor values for NaN and infinity.
+    
+    Args:
+        tensor: Tensor to validate
+        name: Name of the tensor for error messages
+        allow_nan: Whether to allow NaN values
+        allow_inf: Whether to allow infinity values
+        
+    Raises:
+        ValidationError: If tensor contains invalid values
+    """
+    if not hasattr(tensor, 'shape'):
+        raise ValidationError(
+            f"{name} must have a 'shape' attribute",
+            parameter=name,
+            expected="tensor-like object",
+            actual=type(tensor).__name__
+        )
+    
+    # Check for NaN values
+    if not allow_nan:
+        try:
+            import numpy as np
+            if hasattr(tensor, 'numpy'):
+                # PyTorch tensor
+                tensor_np = tensor.detach().cpu().numpy()
+            else:
+                # NumPy array or compatible
+                tensor_np = np.asarray(tensor)
+            
+            if np.any(np.isnan(tensor_np)):
+                raise ValidationError(
+                    f"{name} contains NaN values",
+                    parameter=name,
+                    expected="finite values",
+                    actual="contains NaN"
+                )
+        except (ImportError, AttributeError):
+            # Fall back to basic checking if numpy not available
+            try:
+                # Try to convert to float and check
+                if hasattr(tensor, 'flatten'):
+                    flat_tensor = tensor.flatten()
+                    for val in flat_tensor:
+                        if str(val) == 'nan':
+                            raise ValidationError(
+                                f"{name} contains NaN values",
+                                parameter=name,
+                                expected="finite values",
+                                actual="contains NaN"
+                            )
+            except:
+                # If all else fails, skip NaN checking
+                pass
+    
+    # Check for infinity values
+    if not allow_inf:
+        try:
+            import numpy as np
+            if hasattr(tensor, 'numpy'):
+                # PyTorch tensor
+                tensor_np = tensor.detach().cpu().numpy()
+            else:
+                # NumPy array or compatible
+                tensor_np = np.asarray(tensor)
+            
+            if np.any(np.isinf(tensor_np)):
+                raise ValidationError(
+                    f"{name} contains infinity values",
+                    parameter=name,
+                    expected="finite values",
+                    actual="contains infinity"
+                )
+        except (ImportError, AttributeError):
+            # Fall back to basic checking if numpy not available
+            try:
+                # Try to convert to float and check
+                if hasattr(tensor, 'flatten'):
+                    flat_tensor = tensor.flatten()
+                    for val in flat_tensor:
+                        if str(val) in ['inf', '-inf']:
+                            raise ValidationError(
+                                f"{name} contains infinity values",
+                                parameter=name,
+                                expected="finite values",
+                                actual="contains infinity"
+                            )
+            except:
+                # If all else fails, skip infinity checking
+                pass
 
 
 def check_memory_limit(memory_mb: float, limit_mb: float, operation: str = "operation"):

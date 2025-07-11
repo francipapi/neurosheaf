@@ -62,12 +62,14 @@ class TestPackageImports:
         assert hasattr(neurosheaf, 'ValidationError')
     
     def test_future_imports_placeholder(self):
-        """Test that future imports are handled gracefully."""
+        """Test that implemented components are available."""
         import neurosheaf
         
-        # These will be None during Phase 1 but should not cause ImportError
-        assert neurosheaf.NeurosheafAnalyzer is None
-        assert neurosheaf.DebiasedCKA is None
+        # These should be available in Phase 1
+        assert neurosheaf.NeurosheafAnalyzer is not None
+        assert neurosheaf.DebiasedCKA is not None
+        
+        # These will be None until implemented in later phases
         assert neurosheaf.SheafBuilder is None
 
 

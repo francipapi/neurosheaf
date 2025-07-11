@@ -1,15 +1,33 @@
-"""Sheaf construction module.
+"""Sheaf construction module for neural network analysis.
 
-This module will contain FX-based poset extraction, Procrustes restriction maps,
-and sparse Laplacian assembly for efficient sheaf construction.
+This module implements:
+- FX-based automatic poset extraction from PyTorch models
+- Scaled Procrustes restriction maps between layers
+- Sheaf data structure with mathematical validation
+- Sparse Laplacian assembly for memory efficiency
 
-To be implemented in Phase 3.
+Phase 3 Week 5: FX-based poset extraction implementation.
+Phase 3 Week 6: Restriction maps and sheaf construction.
+Phase 3 Week 7: Sparse Laplacian assembly and optimization.
 """
 
-# Placeholder for Phase 3 implementation
-# from .construction import SheafBuilder
-# from .poset import FXPosetExtractor
-# from .restriction import ScaledProcrustesRestriction
-# from .laplacian import OptimizedLaplacianBuilder
+from .poset import FXPosetExtractor
+from .restriction import ProcrustesMaps, WhiteningProcessor, validate_sheaf_properties
+from .construction import Sheaf, SheafBuilder, create_sheaf_from_cka_analysis
+from .laplacian import SheafLaplacianBuilder, LaplacianMetadata, build_sheaf_laplacian
+from .name_mapper import FXToModuleNameMapper, create_unified_activation_dict
 
-__all__ = []  # Will be populated in Phase 3
+__all__ = [
+    "FXPosetExtractor",
+    "ProcrustesMaps", 
+    "WhiteningProcessor",
+    "validate_sheaf_properties",
+    "Sheaf",
+    "SheafBuilder",
+    "create_sheaf_from_cka_analysis",
+    "SheafLaplacianBuilder",
+    "LaplacianMetadata", 
+    "build_sheaf_laplacian",
+    "FXToModuleNameMapper",
+    "create_unified_activation_dict",
+]
