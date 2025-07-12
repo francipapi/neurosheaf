@@ -51,6 +51,8 @@ R_whitened = compute_restriction_whitened(K_source_white, K_target_white)
 **CRITICAL**: All commands must be run in the conda environment `myenv`:
 ```bash
 # Proper conda activation method (required for AI agents)
+# Note: Set KMP_DUPLICATE_LIB_OK=TRUE to avoid OpenMP conflicts on macOS
+export KMP_DUPLICATE_LIB_OK=TRUE
 source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 ```
 
@@ -58,23 +60,23 @@ Development commands for the project:
 
 ```bash
 # Setup (Phase 1 complete)
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv
 pip install -e .
 pip install -r requirements-dev.txt
 
 # Testing (test-driven development approach)
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -v                              # Run all tests
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/phase{X}/ -v              # Run specific phase tests
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/critical/ -v --tb=short   # Run critical functionality tests
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -m "not slow" -v                # Skip slow tests during development
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -v                              # Run all tests
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/phase{X}/ -v              # Run specific phase tests
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest tests/critical/ -v --tb=short   # Run critical functionality tests
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && pytest -m "not slow" -v                # Skip slow tests during development
 
 # Code quality (Phase 1 complete)
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && black neurosheaf/
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && ruff check neurosheaf/
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && mypy neurosheaf/
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && black neurosheaf/
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && ruff check neurosheaf/
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && mypy neurosheaf/
 
 # Performance profiling (Phase 1 deliverable)
-source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && python -m neurosheaf.utils.benchmarking
+export KMP_DUPLICATE_LIB_OK=TRUE && source /opt/anaconda3/etc/profile.d/conda.sh && conda activate myenv && python -m neurosheaf.utils.benchmarking
 ```
 
 ## Architecture Overview
@@ -135,10 +137,10 @@ Each phase has detailed implementation plans in `plan/phase{X}_*/implementation_
 - **Phase 7**: Production deployment with Docker and PyPI
 
 ### Test-Driven Development
-- **Environment first**: Always run `conda activate myenv` before any development
+- **Environment first**: Always run `export KMP_DUPLICATE_LIB_OK=TRUE && conda activate myenv` before any development
 - **Write tests first**: Start with critical tests from testing suites
-- **Test immediately**: Run `conda activate myenv && pytest -v` after every significant code change
-- **Validate continuously**: Use `conda activate myenv && pytest -v` frequently during development
+- **Test immediately**: Run `export KMP_DUPLICATE_LIB_OK=TRUE && conda activate myenv && pytest -v` after every significant code change
+- **Validate continuously**: Use `export KMP_DUPLICATE_LIB_OK=TRUE && conda activate myenv && pytest -v` frequently during development
 - **Cover edge cases**: Implement edge case tests before they become issues
 
 ## Key Files to Reference

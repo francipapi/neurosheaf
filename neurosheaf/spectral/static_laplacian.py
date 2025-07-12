@@ -448,8 +448,8 @@ def create_static_masked_laplacian(sheaf, enable_gpu: bool = True) -> StaticMask
         StaticMaskedLaplacian ready for filtration analysis
     """
     # Build static Laplacian
-    builder = SheafLaplacianBuilder(enable_gpu=enable_gpu, memory_efficient=True)
-    static_laplacian, construction_metadata = builder.build_laplacian(sheaf)
+    builder = SheafLaplacianBuilder(enable_gpu=enable_gpu, validate_properties=True)
+    static_laplacian, construction_metadata = builder.build(sheaf)
     
     # Extract edge weights for masking
     edge_weights = {}

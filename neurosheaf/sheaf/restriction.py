@@ -258,25 +258,26 @@ class ProcrustesMaps:
             # This gives R^T R = [I 0; 0 0] which preserves orthogonality on the active subspace
             R_whitened[:, :r_target] = torch.eye(r_target)
         
-        # Transform back to original coordinates: R = W_target^† R̃ W_source
-        W_target_pinv = torch.linalg.pinv(W_target)
-        R = W_target_pinv @ R_whitened @ W_source
+        # When using pure whitened coordinates, return the whitened restriction directly
+        # No transformation back to original space
         
         # Scale factor is always 1.0 in whitened coordinates
         scale_factor = 1.0
         
-        # Compute errors in both spaces
-        # Whitened space (should be exact for the optimal rectangular map)
+        # Compute errors in whitened space (should be exact for the optimal rectangular map)
         reconstructed_whitened = R_whitened @ K_source_white @ R_whitened.T
         whitened_error = torch.norm(reconstructed_whitened - K_target_white, p='fro').item()
         
-        # Original space (should be good approximation with proper rectangular map)
-        reconstructed_original = R @ K_source @ R.T
+        # For backward compatibility, compute what the error would be in original space
+        # This is only for logging/debugging purposes
+        W_target_pinv = torch.linalg.pinv(W_target)
+        R_original = W_target_pinv @ R_whitened @ W_source
+        reconstructed_original = R_original @ K_source @ R_original.T
         original_error = torch.norm(reconstructed_original - K_target, p='fro').item()
         target_norm = torch.norm(K_target, p='fro').item()
         
-        # Compute relative error safely
-        original_relative_error = original_error / (target_norm + self.epsilon) if target_norm > 0 else float('inf')
+        # Compute relative error safely (for whitened space)
+        whitened_relative_error = whitened_error / (torch.norm(K_target_white, p='fro').item() + self.epsilon)
         
         # Check orthogonality in whitened space (appropriate for rectangular maps)
         RtR_whitened = R_whitened.T @ R_whitened
@@ -298,20 +299,21 @@ class ProcrustesMaps:
             'original_dimensions': (K_target.shape[0], K_source.shape[0]),
             'whitened_reconstruction_error': whitened_error,
             'original_reconstruction_error': original_error,
-            'relative_error': original_relative_error,
+            'relative_error': whitened_relative_error,  # Now using whitened space error
             'whitened_orthogonality_error': orthogonality_error_whitened,
             'exact_in_whitened_space': whitened_error < 1e-10 and orthogonality_error_whitened < 1e-10,
             'source_whitening_info': source_info,
             'target_whitening_info': target_info,
             'whitening_maps': {'source': W_source, 'target': W_target},
-            'restriction_whitened': R_whitened
+            'restriction_original': R_original  # Keep for reference
         }
         
         if validate:
-            self._validate_whitened_restriction_map(R, R_whitened, K_source, K_target, 
+            self._validate_whitened_restriction_map(R_original, R_whitened, K_source, K_target, 
                                                   K_source_white, K_target_white, info)
         
-        return R, scale_factor, info
+        # Return the whitened restriction map as the primary result
+        return R_whitened, scale_factor, info
     
     def scaled_procrustes(self, K_source: torch.Tensor, K_target: torch.Tensor,
                          validate: bool = True, use_whitening: Optional[bool] = None) -> Tuple[torch.Tensor, float, Dict[str, Any]]:

@@ -1,44 +1,34 @@
-"""Sparse sheaf Laplacian construction for neural network analysis.
-
-This module implements an efficient and mathematically sound sparse Laplacian 
-assembly from whitened sheaf data, optimized for performance. The Laplacian,
-defined as Δ = δᵀδ (where δ is the coboundary operator), encodes the 
-topological structure of the underlying graph and the relationships between data 
-stalks.
-
-Mathematical Foundation:
-- Stalks: Vector spaces associated with each node (ℝ^{d_v}).
-- Restriction Maps: Linear maps R_e: Stalk(u) → Stalk(v) for each edge e=(u,v).
-- Coboundary Operator (δ): For a 0-cochain f = {f_v ∈ Stalk(v)}, its action on an edge e=(u,v) is (δf)_e = f_v - R_e f_u.
-- Sheaf Laplacian (Δ = δᵀδ): A block matrix acting on 0-cochains. Its blocks are:
-  - Diagonal Block (v,v): Δ_vv = Σ_{e=(v,w)} (R_eᵀ R_e) + Σ_{e=(u,v)} I
-  - Off-Diagonal Block (v,w) for edge e=(v,w): Δ_vw = -R_eᵀ
-  - Off-Diagonal Block (w,v) for edge e=(v,w): Δ_wv = -R_e
 """
+Sparse sheaf Laplacian construction for neural network analysis.
 
+This script contains the primary implementation of the SheafLaplacianBuilder
+and a comprehensive, self-contained test suite to verify its correctness
+on various graph structures.
+
+To run the verification tests, execute the script directly:
+    python <filename>.py
+"""
 import torch
 import numpy as np
+import networkx as nx
 import time
 import psutil
-from scipy.sparse import csr_matrix, coo_matrix
+import logging
+from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
-# Assuming the existence of these utility modules from the original structure
-# from ..utils.logging import setup_logger
-# from ..utils.exceptions import ComputationError
-# from .construction import Sheaf
-import logging
-logger = logging.getLogger(__name__)
+# ==================================================================
+# =================== CORE IMPLEMENTATION ==========================
+# ==================================================================
 
-# --- Mock objects for stand-alone execution ---
-from dataclasses import dataclass
-import networkx as nx
+logger = logging.getLogger(__name__)
 
 class ComputationError(Exception):
     pass
 
 @dataclass
 class Sheaf:
+    """A simple dataclass to represent a sheaf for testing purposes."""
     stalks: Dict[str, torch.Tensor]
     restrictions: Dict[Tuple[str, str], torch.Tensor]
     poset: nx.DiGraph
@@ -60,7 +50,6 @@ class LaplacianMetadata:
     memory_usage: float = 0.0
     
     def __post_init__(self):
-        """Initialize empty dictionaries if not provided."""
         if self.stalk_dimensions is None:
             self.stalk_dimensions = {}
         if self.stalk_offsets is None:
@@ -71,18 +60,11 @@ class SheafLaplacianBuilder:
     Builds a sparse sheaf Laplacian Δ = δᵀδ from sheaf data.
 
     This implementation has been optimized for correctness, performance, and clarity.
-    It uses a single, efficient COO-based construction method that correctly 
+    It uses a single, efficient COO-based construction method that correctly
     implements the mathematical formula for the sheaf Laplacian.
     """
     
     def __init__(self, enable_gpu: bool = True, validate_properties: bool = True):
-        """
-        Initialize the Laplacian builder.
-        
-        Args:
-            enable_gpu: If True, enables GPU support for tensor conversion.
-            validate_properties: If True, validates mathematical properties (symmetry, PSD).
-        """
         self.enable_gpu = enable_gpu
         self.validate_properties = validate_properties
         
@@ -90,20 +72,7 @@ class SheafLaplacianBuilder:
             logger.warning("GPU support enabled, but no CUDA device found. Falling back to CPU.")
             self.enable_gpu = False
     
-    def build(self, sheaf: Sheaf, edge_weights: Optional[Dict[Tuple[str, str], float]] = None) -> Tuple[csr_matrix, LaplacianMetadata]:
-        """
-        Builds the sparse sheaf Laplacian using an efficient pre-allocation strategy.
-        
-        Args:
-            sheaf: A Sheaf object containing stalks and restriction maps.
-            edge_weights: Optional weights for edges. Defaults to 1.0.
-            
-        Returns:
-            A tuple containing the sparse Laplacian (csr_matrix) and its metadata.
-            
-        Raises:
-            ComputationError: If the construction fails.
-        """
+    def build(self, sheaf: Sheaf, edge_weights: Optional[Dict[Tuple[str, str], float]] = None) -> Tuple['csr_matrix', LaplacianMetadata]:
         start_time = time.time()
         process = psutil.Process()
         initial_memory = process.memory_info().rss
@@ -141,14 +110,10 @@ class SheafLaplacianBuilder:
             raise ComputationError(f"Laplacian construction failed: {e}", operation="build_laplacian")
 
     def _initialize_metadata(self, sheaf: Sheaf) -> LaplacianMetadata:
-        """Computes dimensions and offsets from the sheaf structure."""
         metadata = LaplacianMetadata()
-        
-        # Stalk dimensions from whitened data
         for node, stalk_data in sheaf.stalks.items():
             metadata.stalk_dimensions[node] = stalk_data.shape[0]
         
-        # Stalk offsets for global matrix indexing
         offset = 0
         for node in sorted(sheaf.poset.nodes()): # Sort for deterministic ordering
             if node in metadata.stalk_dimensions:
@@ -159,68 +124,48 @@ class SheafLaplacianBuilder:
         logger.debug(f"Total Laplacian dimension computed: {metadata.total_dimension}")
         return metadata
 
-    def _build_laplacian_optimized(
-        self,
-        sheaf: Sheaf,
-        edge_weights: Dict[Tuple[str, str], float],
-        metadata: LaplacianMetadata
-    ) -> csr_matrix:
-        """
-        Builds Δ = δᵀδ using a single-pass COO assembly, which is both fast and memory-efficient.
-        
-        This method correctly constructs the matrix by separating the assembly of off-diagonal
-        and diagonal blocks, adhering to the precise mathematical formula.
-        """
+    def _build_laplacian_optimized(self, sheaf: Sheaf, edge_weights: Dict[Tuple[str, str], float], metadata: LaplacianMetadata) -> 'csr_matrix':
+        from scipy.sparse import coo_matrix
+
         rows, cols, data = [], [], []
 
-        # 1. Construct Off-Diagonal Blocks: Δ_wv = -R and Δ_vw = -R^T
+        # 1. Construct Off-Diagonal Blocks
         for edge, restriction in sheaf.restrictions.items():
             u, v = edge
             weight = edge_weights.get(edge, 1.0)
-
             if u not in metadata.stalk_offsets or v not in metadata.stalk_offsets:
-                logger.warning(f"Edge {edge} connects to an unknown node. Skipping.")
                 continue
 
             u_start, v_start = metadata.stalk_offsets[u], metadata.stalk_offsets[v]
             R = restriction.detach().cpu().numpy() * weight
-
-            # Find non-zero entries in the restriction map R
             nz_rows, nz_cols = np.where(np.abs(R) > 1e-12)
             
-            # Contribution to Δ_vu = -R (or Δ_wv if e=(v,w) in other conventions)
             rows.extend(v_start + nz_rows)
             cols.extend(u_start + nz_cols)
             data.extend(-R[nz_rows, nz_cols])
 
-            # Contribution to Δ_uv = -R^T
             rows.extend(u_start + nz_cols)
             cols.extend(v_start + nz_rows)
             data.extend(-R[nz_rows, nz_cols])
 
-        # 2. Construct Diagonal Blocks: Δ_vv = Σ(R_eᵀ R_e) + Σ(I)
+        # 2. Construct Diagonal Blocks
         for node, dim in metadata.stalk_dimensions.items():
             node_start = metadata.stalk_offsets[node]
-            
-            # Initialize the dense diagonal block for this node
             diag_block = np.zeros((dim, dim))
 
-            # Add Σ(R_eᵀ R_e) for all outgoing edges e=(node, w)
             for successor in sheaf.poset.successors(node):
                 edge = (node, successor)
                 if edge in sheaf.restrictions:
                     R = sheaf.restrictions[edge].detach().cpu().numpy()
                     weight = edge_weights.get(edge, 1.0)
-                    if R.shape[1] == dim: # Check dimension consistency
+                    if R.shape[1] == dim:
                         diag_block += (weight**2) * (R.T @ R)
             
-            # Add Σ(I) for all incoming edges e=(u, node) with non-zero weight
             for predecessor in sheaf.poset.predecessors(node):
                 edge = (predecessor, node)
                 if edge in sheaf.restrictions and edge_weights.get(edge, 1.0) > 1e-12:
                     diag_block += np.eye(dim)
 
-            # Add the non-zero entries of the computed diagonal block
             nz_rows, nz_cols = np.where(np.abs(diag_block) > 1e-12)
             rows.extend(node_start + nz_rows)
             cols.extend(node_start + nz_cols)
@@ -228,27 +173,23 @@ class SheafLaplacianBuilder:
 
         # 3. Assemble the sparse matrix
         n = metadata.total_dimension
-        laplacian_coo = coo_matrix((data, (rows, cols)), shape=(n, n))
+        if n == 0: 
+            from scipy.sparse import csr_matrix
+            return csr_matrix((0, 0))
         
-        # Sum duplicates and convert to CSR for efficient arithmetic
+        laplacian_coo = coo_matrix((data, (rows, cols)), shape=(n, n))
         return laplacian_coo.tocsr()
 
-    def _validate_laplacian_properties(self, laplacian: csr_matrix, metadata: LaplacianMetadata):
-        """Validates the mathematical properties of the Laplacian."""
+    def _validate_laplacian_properties(self, laplacian: 'csr_matrix', metadata: LaplacianMetadata):
         logger.debug("Validating Laplacian properties...")
-        # Check for symmetry
         symmetry_diff = np.abs(laplacian - laplacian.T).max()
         if symmetry_diff > 1e-9:
             logger.warning(f"Laplacian is not perfectly symmetric. Max difference: {symmetry_diff:.2e}")
         else:
             logger.debug("Symmetry property verified.")
 
-        # Check for positive semi-definiteness by examining the smallest eigenvalue
         try:
             from scipy.sparse.linalg import eigsh
-            # We only need the smallest eigenvalue to check for PSD
-            # k=1 asks for one eigenvalue, 'SA' asks for the Smallest Algebraic value.
-            # Make sure matrix is large enough for eigsh
             if laplacian.shape[0] > 1:
                 min_eigenval = eigsh(laplacian, k=1, which='SA', return_eigenvectors=False)[0]
                 if min_eigenval < -1e-9:
@@ -257,20 +198,118 @@ class SheafLaplacianBuilder:
                     logger.debug(f"Positive semi-definite property verified. Smallest eigenvalue: {min_eigenval:.2e}")
             else:
                  logger.debug("Skipping eigenvalue check for 1x1 matrix.")
-
         except Exception as e:
             logger.warning(f"Could not compute eigenvalues for validation: {e}")
+
+# ==================================================================
+# =================== VERIFICATION TEST SUITE ====================
+# ==================================================================
+
+def _create_simple_sheaf():
+    poset = nx.DiGraph()
+    poset.add_edge("n1", "n2")
+    stalks = {"n1": torch.eye(2), "n2": torch.eye(1)}
+    restrictions = {("n1", "n2"): torch.tensor([[2., 3.]])}
+    return Sheaf(stalks=stalks, restrictions=restrictions, poset=poset)
+
+def _create_cyclic_sheaf():
+    poset = nx.DiGraph()
+    poset.add_edges_from([("n1", "n2"), ("n2", "n3"), ("n3", "n1")])
+    stalks = {"n1": torch.eye(1), "n2": torch.eye(1), "n3": torch.eye(1)}
+    restrictions = {
+        ("n1", "n2"): torch.tensor([[2.0]]),
+        ("n2", "n3"): torch.tensor([[3.0]]),
+        ("n3", "n1"): torch.tensor([[4.0]])
+    }
+    return Sheaf(stalks=stalks, restrictions=restrictions, poset=poset)
+
+def _create_disconnected_sheaf():
+    poset = nx.DiGraph()
+    poset.add_edges_from([("n1", "n2"), ("n3", "n4")])
+    stalks = {"n1": torch.eye(2), "n2": torch.eye(1), "n3": torch.eye(1), "n4": torch.eye(2)}
+    restrictions = {
+        ("n1", "n2"): torch.tensor([[1., 2.]]),
+        ("n3", "n4"): torch.tensor([[3.], [4.]])
+    }
+    return Sheaf(stalks=stalks, restrictions=restrictions, poset=poset)
+
+def _create_self_loop_sheaf():
+    poset = nx.DiGraph()
+    poset.add_edges_from([("n1", "n2"), ("n2", "n2"), ("n1", "n3")])
+    stalks = {"n1": torch.eye(1), "n2": torch.eye(2), "n3": torch.eye(1)}
+    restrictions = {
+        ("n1", "n2"): torch.tensor([[1.], [2.]]),
+        ("n2", "n2"): torch.tensor([[3., 0.], [0., 5.]]),
+        ("n1", "n3"): torch.tensor([[100.]])
+    }
+    edge_weights = {("n1", "n2"): 1.0, ("n2", "n2"): 1.0, ("n1", "n3"): 0.0}
+    return Sheaf(stalks=stalks, restrictions=restrictions, poset=poset), edge_weights
+
+def _create_no_edge_sheaf():
+    poset = nx.DiGraph()
+    poset.add_nodes_from(["n1", "n2", "n3"])
+    stalks = {"n1": torch.eye(2), "n2": torch.eye(1), "n3": torch.eye(3)}
+    return Sheaf(stalks=stalks, restrictions={}, poset=poset)
+
+def run_verification_tests():
+    print("=" * 60)
+    print("🚀 Running Full Verification Test Suite...")
+    print("=" * 60)
     
-    def to_torch_sparse(self, laplacian: csr_matrix) -> torch.sparse.FloatTensor:
-        """Converts a SciPy CSR matrix to a PyTorch sparse COO tensor."""
-        laplacian_coo = laplacian.tocoo()
-        indices = torch.from_numpy(np.vstack((laplacian_coo.row, laplacian_coo.col))).long()
-        values = torch.from_numpy(laplacian_coo.data).float()
-        shape = torch.Size(laplacian_coo.shape)
+    builder = SheafLaplacianBuilder(validate_properties=True)
+    all_tests_passed = True
+    
+    test_cases = [
+        {"name": "Test 1: Simple Two-Node Graph", "sheaf_fn": _create_simple_sheaf, "weights": None,
+         "expected": np.array([[4., 6., -2.], [6., 9., -3.], [-2., -3., 1.]])},
         
-        sparse_tensor = torch.sparse_coo_tensor(indices, values, shape, dtype=torch.float32)
+        {"name": "Test 2: Cyclic Three-Node Graph", "sheaf_fn": _create_cyclic_sheaf, "weights": None,
+         "expected": np.array([[5., -2., -4.], [-2., 10., -3.], [-4., -3., 17.]])},
         
-        if self.enable_gpu:
-            sparse_tensor = sparse_tensor.to('cuda')
+        {"name": "Test 3: Disconnected Graph", "sheaf_fn": _create_disconnected_sheaf, "weights": None,
+         "expected": np.array([[1., 2., -1., 0., 0., 0.], [2., 4., -2., 0., 0., 0.], [-1., -2., 1., 0., 0., 0.],
+                               [0., 0., 0., 25., -3., -4.], [0., 0., 0., -3., 1., 0.], [0., 0., 0., -4., 0., 1.]])},
         
-        return sparse_tensor.coalesce()
+        {"name": "Test 4: Self-Loop and Zero-Weight Edge", "sheaf_fn": _create_self_loop_sheaf,
+         "expected": np.array([[5., -1., -2., 0.], [-1., 5., 0., 0.], [-2., 0., 17., 0.], [0., 0., 0., 0.]])},
+        
+        {"name": "Test 5: Graph with No Edges", "sheaf_fn": _create_no_edge_sheaf, "weights": None,
+         "expected": np.zeros((6, 6))},
+    ]
+
+    for test in test_cases:
+        try:
+            print(f"\n--- {test['name']} ---")
+            sheaf_data = test["sheaf_fn"]()
+            weights = test.get("weights")
+            if isinstance(sheaf_data, tuple):
+                sheaf, default_weights = sheaf_data
+                weights = default_weights # Use weights defined with the sheaf
+            else:
+                sheaf = sheaf_data
+
+            computed_L, _ = builder.build(sheaf, edge_weights=weights)
+            computed_L_dense = computed_L.toarray()
+
+            if np.allclose(computed_L_dense, test["expected"]):
+                print(f"✅ {test['name']} PASSED")
+            else:
+                print(f"❌ {test['name']} FAILED:")
+                print(f"Expected:\n{test['expected']}")
+                print(f"Got:\n{computed_L_dense}")
+                print(f"Difference:\n{computed_L_dense - test['expected']}")
+                all_tests_passed = False
+        except Exception as e:
+            print(f"❌ {test['name']} FAILED: {e}")
+            all_tests_passed = False
+            
+    print("-" * 60)
+    if all_tests_passed:
+        print("🎉 \033[1m\033[92mAll tests passed successfully!\033[0m")
+    else:
+        print("🔥 \033[1m\033[91mSome tests failed. Please review the output.\033[0m")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+    run_verification_tests()

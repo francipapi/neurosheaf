@@ -14,8 +14,9 @@ Phase 3 Week 7: Sparse Laplacian assembly and optimization.
 from .poset import FXPosetExtractor
 from .restriction import ProcrustesMaps, WhiteningProcessor, validate_sheaf_properties
 from .construction import Sheaf, SheafBuilder, create_sheaf_from_cka_analysis
-from .laplacian import SheafLaplacianBuilder, LaplacianMetadata, build_sheaf_laplacian
+from .laplacian import SheafLaplacianBuilder, LaplacianMetadata
 from .name_mapper import FXToModuleNameMapper, create_unified_activation_dict
+from .enhanced_extraction import EnhancedActivationExtractor
 
 __all__ = [
     "FXPosetExtractor",
@@ -27,7 +28,7 @@ __all__ = [
     "create_sheaf_from_cka_analysis",
     "SheafLaplacianBuilder",
     "LaplacianMetadata", 
-    "build_sheaf_laplacian",
     "FXToModuleNameMapper",
     "create_unified_activation_dict",
+    "EnhancedActivationExtractor",
 ]

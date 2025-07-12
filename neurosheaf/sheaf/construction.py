@@ -40,14 +40,16 @@ class Sheaf:
     
     Attributes:
         poset: NetworkX directed graph representing layer dependencies
-        stalks: Dictionary mapping node names to tensor data
+        stalks: Dictionary mapping node names to tensor data (in whitened coordinates if use_whitening=True)
         restrictions: Dictionary mapping edges to restriction map tensors
         metadata: Additional information about construction and validation
+        whitening_maps: Dictionary mapping node names to whitening transformations (if use_whitening=True)
     """
     poset: nx.DiGraph = field(default_factory=nx.DiGraph)
     stalks: Dict[str, torch.Tensor] = field(default_factory=dict)
     restrictions: Dict[Tuple[str, str], torch.Tensor] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    whitening_maps: Dict[str, torch.Tensor] = field(default_factory=dict)
     
     def __post_init__(self):
         """Initialize metadata if not provided."""
@@ -203,7 +205,7 @@ class SheafBuilder:
                 raise ArchitectureError(f"Failed to extract poset: {e2}")
         
         # Assign stalks from translated activations
-        stalks = self._assign_stalks_from_activations(translated_activations, poset, use_gram_matrices)
+        stalks, whitening_maps = self._assign_stalks_from_activations(translated_activations, poset, use_gram_matrices)
         
         # Compute restriction maps
         restrictions = self._compute_all_restrictions(stalks, poset)
@@ -233,7 +235,8 @@ class SheafBuilder:
             poset=poset,
             stalks=stalks,
             restrictions=restrictions,
-            metadata=metadata
+            metadata=metadata,
+            whitening_maps=whitening_maps if self.use_whitening else {}
         )
         
         # Validate if requested
@@ -258,11 +261,21 @@ class SheafBuilder:
         """
         logger.info("Building sheaf from CKA matrices")
         
-        # Use CKA matrices directly as stalks
+        # Use CKA matrices directly as stalks (apply whitening if enabled)
         stalks = {}
+        whitening_maps = {}
+        
         for node in poset.nodes():
             if node in cka_matrices:
-                stalks[node] = cka_matrices[node]
+                if self.use_whitening:
+                    # Apply whitening transformation to CKA matrices
+                    K_whitened, W, info = self.procrustes_maps.whitening_processor.whiten_gram_matrix(cka_matrices[node])
+                    stalks[node] = K_whitened  # Store r×r identity matrix
+                    whitening_maps[node] = W    # Store r×n whitening map
+                    logger.debug(f"Assigned whitened CKA stalk for {node}: shape {stalks[node].shape} "
+                               f"(rank {info['effective_rank']}/{cka_matrices[node].shape[0]})")
+                else:
+                    stalks[node] = cka_matrices[node]
             else:
                 logger.warning(f"No CKA matrix for node {node}")
         
@@ -290,7 +303,8 @@ class SheafBuilder:
             poset=poset,
             stalks=stalks,
             restrictions=restrictions,
-            metadata=metadata
+            metadata=metadata,
+            whitening_maps=whitening_maps if self.use_whitening else {}
         )
         
         # Validate if requested
@@ -337,7 +351,7 @@ class SheafBuilder:
         return self.build_from_activations(model1, combined_activations, validate=validate)
     
     def _assign_stalks_from_activations(self, activations: Dict[str, torch.Tensor], 
-                                       poset: nx.DiGraph, use_gram_matrices: bool) -> Dict[str, torch.Tensor]:
+                                       poset: nx.DiGraph, use_gram_matrices: bool) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         """Assign stalk data from activation tensors.
         
         Args:
@@ -346,9 +360,12 @@ class SheafBuilder:
             use_gram_matrices: Whether to compute Gram matrices
             
         Returns:
-            Dictionary mapping node names to stalk tensors
+            Tuple of (stalks, whitening_maps):
+            - stalks: Dictionary mapping node names to stalk tensors (whitened if use_whitening=True)
+            - whitening_maps: Dictionary mapping node names to whitening transformations
         """
         stalks = {}
+        whitening_maps = {}
         
         for node in poset.nodes():
             if node in activations:
@@ -361,16 +378,25 @@ class SheafBuilder:
                 if use_gram_matrices:
                     # Compute Gram matrix K = X @ X.T (raw activations, no centering)
                     gram_matrix = activation @ activation.T
-                    stalks[node] = gram_matrix
-                else:
-                    # Use raw activations
-                    stalks[node] = activation
                     
-                logger.debug(f"Assigned stalk for {node}: shape {stalks[node].shape}")
+                    if self.use_whitening:
+                        # Apply whitening transformation
+                        K_whitened, W, info = self.procrustes_maps.whitening_processor.whiten_gram_matrix(gram_matrix)
+                        stalks[node] = K_whitened  # Store r×r identity matrix
+                        whitening_maps[node] = W    # Store r×n whitening map
+                        logger.debug(f"Assigned whitened stalk for {node}: shape {stalks[node].shape} "
+                                   f"(rank {info['effective_rank']}/{gram_matrix.shape[0]})")
+                    else:
+                        stalks[node] = gram_matrix
+                        logger.debug(f"Assigned stalk for {node}: shape {stalks[node].shape}")
+                else:
+                    # Use raw activations (no whitening for raw activations mode)
+                    stalks[node] = activation
+                    logger.debug(f"Assigned activation stalk for {node}: shape {stalks[node].shape}")
             else:
                 logger.warning(f"No activation data for node {node}")
         
-        return stalks
+        return stalks, whitening_maps
     
     def _compute_all_restrictions(self, stalks: Dict[str, torch.Tensor], 
                                  poset: nx.DiGraph) -> Dict[Tuple[str, str], torch.Tensor]:
@@ -405,11 +431,35 @@ class SheafBuilder:
                     K_source = stalks[source]
                     K_target = stalks[target]
                     
-                    # Compute restriction map (potentially using whitening)
-                    R, scale, info = self.procrustes_maps.compute_restriction_map(
-                        K_source, K_target, method=self.default_method, 
-                        validate=True, use_whitening=self.use_whitening
-                    )
+                    if self.use_whitening:
+                        # Stalks are already whitened identity matrices
+                        # Compute restriction map directly in whitened space
+                        r_source = K_source.shape[0]
+                        r_target = K_target.shape[0]
+                        
+                        # Create proper rectangular restriction map
+                        R = torch.zeros(r_target, r_source)
+                        if r_source <= r_target:
+                            # Embedding: target has higher rank
+                            R[:r_source, :] = torch.eye(r_source)
+                        else:
+                            # Projection: source has higher rank
+                            R[:, :r_target] = torch.eye(r_target)
+                        
+                        scale = 1.0
+                        info = {
+                            'method': 'whitened_identity',
+                            'scale': scale,
+                            'whitened_dimensions': (r_target, r_source),
+                            'relative_error': 0.0,  # Exact in whitened space
+                            'exact_in_whitened_space': True
+                        }
+                    else:
+                        # Compute restriction map using standard method
+                        R, scale, info = self.procrustes_maps.compute_restriction_map(
+                            K_source, K_target, method=self.default_method, 
+                            validate=True, use_whitening=False
+                        )
                     
                     # Extract quality metrics
                     rel_error = info.get('relative_error', float('inf'))
