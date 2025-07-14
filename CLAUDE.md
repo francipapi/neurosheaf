@@ -41,6 +41,25 @@ R_whitened = compute_restriction_whitened(K_source_white, K_target_white)
 - Whitening is a change of coordinates, NOT a loss of information
 - **Result**: 100% acceptance criteria success vs 44% with back-transformation
 
+### GENERAL SHEAF LAPLACIAN FORMULATION (Phase 3 - MATHEMATICAL CORRECTNESS)
+**CRITICAL UPDATE**: The Laplacian implementation now uses the general sheaf formulation that correctly handles rectangular restriction maps between stalks of different dimensions.
+
+```python
+# CORRECT: General sheaf Laplacian formulation
+# For edge e=(u,v) with restriction R: u → v
+# Off-diagonal blocks: L[u,v] = -R^T, L[v,u] = -R
+# Diagonal blocks: L[v,v] = Σ_{incoming} I + Σ_{outgoing} R^T R
+
+# WRONG: Connection Laplacian (assumes same dimensions)
+# Diagonal blocks: L[v,v] = Σ R^T R (missing identity terms)
+```
+
+**Mathematical Justification**:
+- General formulation: Handles rectangular maps between different dimensions
+- Connection Laplacian: Only works when all stalks have same dimension
+- Implementation: Uses sparse matrices throughout for efficiency
+- **Result**: Correct spectral properties for neural network analysis with varying layer sizes
+
 ### Performance Targets
 - **Memory**: <3GB for ResNet50 analysis (7× improvement from 20GB baseline)
 - **Speed**: <5 minutes for complete analysis pipeline

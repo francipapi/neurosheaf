@@ -1,34 +1,80 @@
 """Sheaf construction module for neural network analysis.
 
-This module implements:
-- FX-based automatic poset extraction from PyTorch models
-- Scaled Procrustes restriction maps between layers
-- Sheaf data structure with mathematical validation
-- Sparse Laplacian assembly for memory efficiency
+This module provides a clean, mathematically sound implementation of cellular
+sheaves for neural network analysis using whitened coordinates for optimal
+numerical properties.
 
-Phase 3 Week 5: FX-based poset extraction implementation.
-Phase 3 Week 6: Restriction maps and sheaf construction.
-Phase 3 Week 7: Sparse Laplacian assembly and optimization.
+Key Features:
+- FX-based automatic poset extraction from PyTorch models
+- Whitened coordinate transformations for exact metric compatibility  
+- Scaled Procrustes restriction maps between layers
+- Clean sheaf data structures with validation
+- Efficient sparse Laplacian assembly
+
+All mathematical operations occur in whitened coordinate space for
+optimal conditioning and exact orthogonality properties.
 """
 
-from .poset import FXPosetExtractor
-from .restriction import ProcrustesMaps, WhiteningProcessor, validate_sheaf_properties
-from .construction import Sheaf, SheafBuilder, create_sheaf_from_cka_analysis
-from .laplacian import SheafLaplacianBuilder, LaplacianMetadata
-from .name_mapper import FXToModuleNameMapper, create_unified_activation_dict
-from .enhanced_extraction import EnhancedActivationExtractor
+# Core mathematical operations
+from .core import (
+    WhiteningProcessor,
+    scaled_procrustes_whitened, 
+    validate_sheaf_properties,
+    validate_restriction_orthogonality,
+    compute_gram_matrix,
+    compute_gram_matrices_from_activations,
+    validate_gram_matrix_properties
+)
+
+# Data structures
+from .data_structures import Sheaf, SheafValidationResult, WhiteningInfo
+
+# Extraction utilities
+from .extraction import (
+    FXPosetExtractor,
+    FXActivationExtractor,
+    extract_activations_fx,
+    FXToModuleNameMapper,
+    create_unified_activation_dict
+)
+
+# Assembly pipeline
+from .assembly import (
+    SheafBuilder,
+    RestrictionManager,
+    compute_restrictions_for_sheaf,
+    SheafLaplacianBuilder,
+    build_sheaf_laplacian,
+    LaplacianMetadata
+)
 
 __all__ = [
-    "FXPosetExtractor",
-    "ProcrustesMaps", 
+    # Core mathematical operations
     "WhiteningProcessor",
-    "validate_sheaf_properties",
+    "scaled_procrustes_whitened",
+    "validate_sheaf_properties", 
+    "validate_restriction_orthogonality",
+    "compute_gram_matrix",
+    "compute_gram_matrices_from_activations",
+    "validate_gram_matrix_properties",
+    
+    # Data structures
     "Sheaf",
-    "SheafBuilder",
-    "create_sheaf_from_cka_analysis",
-    "SheafLaplacianBuilder",
-    "LaplacianMetadata", 
+    "SheafValidationResult", 
+    "WhiteningInfo",
+    
+    # Extraction utilities
+    "FXPosetExtractor",
+    "FXActivationExtractor",
+    "extract_activations_fx",
     "FXToModuleNameMapper",
     "create_unified_activation_dict",
-    "EnhancedActivationExtractor",
+    
+    # Assembly pipeline
+    "SheafBuilder",
+    "RestrictionManager",
+    "compute_restrictions_for_sheaf",
+    "SheafLaplacianBuilder", 
+    "build_sheaf_laplacian",
+    "LaplacianMetadata",
 ]

@@ -143,7 +143,7 @@ class SheafBuilder:
     """
     
     def __init__(self, handle_dynamic: bool = True, procrustes_epsilon: float = 1e-8,
-                 restriction_method: str = 'scaled_procrustes', use_whitening: bool = False,
+                 restriction_method: str = 'scaled_procrustes', use_whitening: bool = True,
                  residual_threshold: float = 0.05, enable_edge_filtering: bool = True):
         """Initialize sheaf builder.
         
@@ -264,10 +264,15 @@ class SheafBuilder:
         # Use CKA matrices directly as stalks (apply whitening if enabled)
         stalks = {}
         whitening_maps = {}
+        # Store original CKA matrices for restriction computation when using whitening
+        self._original_gram_matrices = {} if self.use_whitening else None
         
         for node in poset.nodes():
             if node in cka_matrices:
                 if self.use_whitening:
+                    # Store original CKA matrix for restriction computation
+                    self._original_gram_matrices[node] = cka_matrices[node]
+                    
                     # Apply whitening transformation to CKA matrices
                     K_whitened, W, info = self.procrustes_maps.whitening_processor.whiten_gram_matrix(cka_matrices[node])
                     stalks[node] = K_whitened  # Store r×r identity matrix
@@ -366,6 +371,8 @@ class SheafBuilder:
         """
         stalks = {}
         whitening_maps = {}
+        # Store original Gram matrices for restriction computation when using whitening
+        self._original_gram_matrices = {} if self.use_whitening else None
         
         for node in poset.nodes():
             if node in activations:
@@ -380,6 +387,9 @@ class SheafBuilder:
                     gram_matrix = activation @ activation.T
                     
                     if self.use_whitening:
+                        # Store original Gram matrix for restriction computation
+                        self._original_gram_matrices[node] = gram_matrix
+                        
                         # Apply whitening transformation
                         K_whitened, W, info = self.procrustes_maps.whitening_processor.whiten_gram_matrix(gram_matrix)
                         stalks[node] = K_whitened  # Store r×r identity matrix
@@ -432,28 +442,49 @@ class SheafBuilder:
                     K_target = stalks[target]
                     
                     if self.use_whitening:
-                        # Stalks are already whitened identity matrices
-                        # Compute restriction map directly in whitened space
-                        r_source = K_source.shape[0]
-                        r_target = K_target.shape[0]
+                        # Use the new scaled_procrustes_whitened function with original Gram matrices
+                        # This function handles the complete whitening process internally and 
+                        # returns the optimal restriction map in whitened coordinates.
                         
-                        # Create proper rectangular restriction map
-                        R = torch.zeros(r_target, r_source)
-                        if r_source <= r_target:
-                            # Embedding: target has higher rank
-                            R[:r_source, :] = torch.eye(r_source)
+                        if hasattr(self, '_original_gram_matrices') and self._original_gram_matrices:
+                            # Use original Gram matrices for proper restriction computation
+                            K_source_orig = self._original_gram_matrices.get(source)
+                            K_target_orig = self._original_gram_matrices.get(target)
+                            
+                            if K_source_orig is not None and K_target_orig is not None:
+                                R, scale, info = self.procrustes_maps.scaled_procrustes_whitened(
+                                    K_source_orig, K_target_orig, validate=False
+                                )
+                            else:
+                                # Fallback: use whitened stalks (identity matrices)
+                                logger.warning(f"Missing original Gram matrices for edge {edge}, using identity fallback")
+                                r_source = K_source.shape[0]
+                                r_target = K_target.shape[0]
+                                
+                                if r_source <= r_target:
+                                    R = torch.zeros(r_target, r_source)
+                                    R[:r_source, :] = torch.eye(r_source)
+                                else:
+                                    R = torch.zeros(r_target, r_source)
+                                    R[:, :r_target] = torch.eye(r_target)
+                                
+                                scale = 1.0
+                                info = {'method': 'identity_fallback', 'scale': scale, 'relative_error': 0.0}
                         else:
-                            # Projection: source has higher rank
-                            R[:, :r_target] = torch.eye(r_target)
-                        
-                        scale = 1.0
-                        info = {
-                            'method': 'whitened_identity',
-                            'scale': scale,
-                            'whitened_dimensions': (r_target, r_source),
-                            'relative_error': 0.0,  # Exact in whitened space
-                            'exact_in_whitened_space': True
-                        }
+                            # Legacy fallback for whitened identity matrices
+                            logger.warning("Using legacy identity restriction for whitened stalks")
+                            r_source = K_source.shape[0]
+                            r_target = K_target.shape[0]
+                            
+                            if r_source <= r_target:
+                                R = torch.zeros(r_target, r_source)
+                                R[:r_source, :] = torch.eye(r_source)
+                            else:
+                                R = torch.zeros(r_target, r_source)
+                                R[:, :r_target] = torch.eye(r_target)
+                            
+                            scale = 1.0
+                            info = {'method': 'identity_legacy', 'scale': scale, 'relative_error': 0.0}
                     else:
                         # Compute restriction map using standard method
                         R, scale, info = self.procrustes_maps.compute_restriction_map(

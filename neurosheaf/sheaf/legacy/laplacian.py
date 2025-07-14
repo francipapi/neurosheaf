@@ -112,9 +112,11 @@ class SheafLaplacianBuilder:
         
         try:
             metadata = self._initialize_metadata(sheaf)
-            
+
+
+            #Problematic should be initializes to frobenius norm
             if edge_weights is None:
-                edge_weights = {edge: 1.0 for edge in sheaf.restrictions.keys()}
+                edge_weights = {edge: 1.0 for edge in sheaf.restrictions.keys()} 
             
             laplacian = self._build_laplacian_optimized(sheaf, edge_weights, metadata)
             
