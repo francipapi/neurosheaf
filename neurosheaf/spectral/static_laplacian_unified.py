@@ -30,8 +30,8 @@ from dataclasses import dataclass
 
 from ..utils.logging import setup_logger
 from ..utils.exceptions import ComputationError
-from ..sheaf.construction import Sheaf
-from ..sheaf.laplacian import SheafLaplacianBuilder, LaplacianMetadata
+from ..sheaf.data_structures import Sheaf
+from ..sheaf.assembly.laplacian import SheafLaplacianBuilder, LaplacianMetadata
 
 logger = setup_logger(__name__)
 
@@ -121,7 +121,6 @@ class UnifiedStaticLaplacian:
             validate_properties: Whether to validate mathematical properties
         """
         self.laplacian_builder = laplacian_builder or SheafLaplacianBuilder(
-            enable_gpu=enable_gpu,
             validate_properties=validate_properties
         )
         self.eigenvalue_method = eigenvalue_method
@@ -311,7 +310,12 @@ class UnifiedStaticLaplacian:
         
         This is the key mathematical correction: instead of zeroing matrix positions
         (which destroys Laplacian structure), we reconstruct the Laplacian using
-        only the active edges according to the correct formula.
+        only the active edges according to the correct general sheaf formulation.
+        
+        Uses dynamic weight application strategy:
+        - Cache stores unweighted structural components (R, R^T R, I)
+        - Weights are applied dynamically at filtration time
+        - Maximizes cache reusability across different filtration parameters
         """
         active_edges = [edge for edge, keep in edge_mask.items() if keep]
         
@@ -319,7 +323,12 @@ class UnifiedStaticLaplacian:
         
         # Use cached edge contributions if available for efficiency
         if self.enable_caching and self._edge_contributions:
-            return self._build_laplacian_from_cache(active_edges, laplacian.shape)
+            # Store edge_info for dynamic weight application
+            self._current_edge_info = edge_info
+            filtered_laplacian = self._build_laplacian_from_cache(active_edges, laplacian.shape)
+            # Clear temporary reference
+            self._current_edge_info = None
+            return filtered_laplacian
         else:
             # Fallback: rebuild from scratch (less efficient but always correct)
             return self._build_laplacian_from_scratch(active_edges, edge_info, metadata, laplacian.shape)
@@ -344,30 +353,35 @@ class UnifiedStaticLaplacian:
                 v_start = metadata.stalk_offsets[v]
                 R = restriction.detach().cpu().numpy()
                 
-                # Pre-compute off-diagonal contributions
+                # Pre-compute UNWEIGHTED off-diagonal contributions  
+                # Store unweighted values; weight will be applied dynamically
                 nz_rows, nz_cols = np.where(np.abs(R) > 1e-12)
                 off_positions = []
                 off_values = []
                 
-                # Δ_vu = -R^T
+                # Δ_vu = -R^T (unweighted, weight applied at filtration time)
                 for i, j in zip(nz_rows, nz_cols):
                     off_positions.append((v_start + i, u_start + j))
-                    off_values.append(-R[i, j])
+                    off_values.append(-R[i, j])  # Store unweighted value
                 
-                # Δ_uv = -R
+                # Δ_uv = -R (unweighted, weight applied at filtration time)
                 for i, j in zip(nz_rows, nz_cols):
                     off_positions.append((u_start + j, v_start + i))
-                    off_values.append(-R[i, j])
+                    off_values.append(-R[i, j])  # Store unweighted value
                 
-                # Pre-compute diagonal contributions
+                # Pre-compute UNWEIGHTED diagonal contributions for general sheaf Laplacian
+                # Weights will be applied dynamically at filtration time for maximum cache reusability
                 diag_contributions = {}
                 
-                # R^T R for source node
-                if R.shape[1] == metadata.stalk_dimensions[u]:
-                    diag_contributions[u] = R.T @ R
+                # For target v: store unweighted identity (weight² applied at filtration time)
+                r_v_dim = min(R.shape[0], metadata.stalk_dimensions[v])
+                diag_contributions[v] = np.eye(r_v_dim)
                 
-                # I for target node
-                diag_contributions[v] = np.eye(metadata.stalk_dimensions[v])
+                # For source u: store unweighted R^T R (weight² applied at filtration time)
+                r_u_dim = min(R.shape[1], metadata.stalk_dimensions[u])
+                r_v_dim = min(R.shape[0], metadata.stalk_dimensions[v])
+                R_safe = R[:r_v_dim, :r_u_dim]
+                diag_contributions[u] = R_safe.T @ R_safe
                 
                 self._edge_contributions[edge] = {
                     'off_diag_positions': off_positions,
@@ -376,6 +390,16 @@ class UnifiedStaticLaplacian:
                 }
             
             logger.debug(f"Pre-computed contributions for {len(self._edge_contributions)} edges")
+    
+    def _get_edge_weight_from_info(self, edge: Tuple[str, str]) -> float:
+        """Get edge weight from cached edge information for dynamic application."""
+        if hasattr(self, '_current_edge_info') and edge in self._current_edge_info:
+            return self._current_edge_info[edge].get('weight', 1.0)
+        elif hasattr(self, 'masking_metadata') and edge in self.masking_metadata.edge_weights:
+            return self.masking_metadata.edge_weights[edge]
+        else:
+            logger.warning(f"No weight found for edge {edge}, using default 1.0")
+            return 1.0
     
     def _build_laplacian_from_cache(self, active_edges: List[Tuple[str, str]], 
                                    matrix_shape: Tuple[int, int]) -> csr_matrix:
@@ -391,12 +415,15 @@ class UnifiedStaticLaplacian:
         nnz_idx = 0
         diagonal_blocks = {}
         
-        # Add contributions from each active edge
+        # Add contributions from each active edge with dynamic weight application
         for edge in active_edges:
             if edge in self._edge_contributions:
                 contrib = self._edge_contributions[edge]
                 
-                # Add off-diagonal contributions
+                # Get edge weight for dynamic application
+                edge_weight = self._get_edge_weight_from_info(edge)
+                
+                # Add off-diagonal contributions (apply weight dynamically)
                 if 'off_diag_positions' in contrib and 'off_diag_values' in contrib:
                     off_positions = contrib['off_diag_positions']
                     off_values = contrib['off_diag_values']
@@ -405,16 +432,19 @@ class UnifiedStaticLaplacian:
                     if end_idx <= total_nnz:
                         rows[nnz_idx:end_idx] = [pos[0] for pos in off_positions]
                         cols[nnz_idx:end_idx] = [pos[1] for pos in off_positions]
-                        data[nnz_idx:end_idx] = off_values
+                        # Apply weight to off-diagonal values: -weight * R
+                        data[nnz_idx:end_idx] = [val * edge_weight for val in off_values]
                         nnz_idx = end_idx
                 
-                # Accumulate diagonal contributions
+                # Accumulate diagonal contributions (apply weight² dynamically)
                 if 'diag_contributions' in contrib:
-                    for node, diag_block in contrib['diag_contributions'].items():
+                    weight_squared = edge_weight ** 2
+                    for node, unweighted_diag_block in contrib['diag_contributions'].items():
+                        weighted_diag_block = weight_squared * unweighted_diag_block
                         if node not in diagonal_blocks:
-                            diagonal_blocks[node] = diag_block.copy()
+                            diagonal_blocks[node] = weighted_diag_block.copy()
                         else:
-                            diagonal_blocks[node] += diag_block
+                            diagonal_blocks[node] += weighted_diag_block
         
         # Add accumulated diagonal blocks
         for node, diag_block in diagonal_blocks.items():
@@ -483,19 +513,27 @@ class UnifiedStaticLaplacian:
         for node in stalk_dimensions:
             diagonal_contributions[node] = np.zeros((stalk_dimensions[node], stalk_dimensions[node]))
         
-        # Add R^T R for outgoing edges and I for incoming edges
+        # Add contributions using GENERAL sheaf Laplacian formulation (not connection Laplacian)
+        # For edge e=(u,v): L[v,v] += I (incoming), L[u,u] += R^T R (outgoing)
         for edge in active_edges:
             if edge in edge_info and 'restriction_matrix' in edge_info[edge]:
                 u, v = edge
                 R = edge_info[edge]['restriction_matrix']
+                weight = edge_info[edge].get('weight', 1.0)
                 
-                # Add R^T R to source diagonal block
-                if u in diagonal_contributions and R.shape[1] == stalk_dimensions[u]:
-                    diagonal_contributions[u] += R.T @ R
-                
-                # Add I to target diagonal block
+                # For target v: add weighted identity for incoming edge
                 if v in diagonal_contributions:
-                    diagonal_contributions[v] += np.eye(stalk_dimensions[v])
+                    r_v_dim = min(R.shape[0], stalk_dimensions[v])
+                    weighted_identity = (weight**2) * np.eye(r_v_dim)
+                    diagonal_contributions[v] += weighted_identity
+                
+                # For source u: add R^T R for outgoing edge
+                if u in diagonal_contributions:
+                    r_u_dim = min(R.shape[1], stalk_dimensions[u])
+                    r_v_dim = min(R.shape[0], stalk_dimensions[v])
+                    R_safe = R[:r_v_dim, :r_u_dim]
+                    R_weighted = weight * R_safe
+                    diagonal_contributions[u] += R_weighted.T @ R_weighted
         
         # Add diagonal blocks to sparse matrix data
         for node, diag_block in diagonal_contributions.items():

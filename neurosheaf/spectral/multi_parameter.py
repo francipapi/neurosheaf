@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from ..utils.logging import setup_logger
 from ..utils.exceptions import ComputationError
-from ..sheaf.construction import Sheaf
+from ..sheaf.data_structures import Sheaf
 
 logger = setup_logger(__name__)
 

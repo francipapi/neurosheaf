@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple, Union, Callable
 import time
 from ..utils.logging import setup_logger
 from ..utils.exceptions import ComputationError
-from ..sheaf.construction import Sheaf
+from ..sheaf.data_structures import Sheaf
 from .static_laplacian_unified import UnifiedStaticLaplacian as StaticLaplacianWithMasking
 from .tracker import SubspaceTracker
 
