@@ -11,20 +11,28 @@ and operate in whitened coordinate spaces for optimal properties.
 """
 
 from .whitening import WhiteningProcessor
-from .procrustes import scaled_procrustes_whitened
+from .procrustes import scaled_procrustes_whitened, scaled_procrustes_adaptive
 from .validation import validate_sheaf_properties, validate_restriction_orthogonality
 from .gram_matrices import (
     compute_gram_matrix, 
     compute_gram_matrices_from_activations,
+    compute_regularized_gram_matrix,
+    compute_gram_matrices_with_regularization,
     validate_gram_matrix_properties
 )
+from .tikhonov import AdaptiveTikhonovRegularizer, create_regularizer_from_config
 
 __all__ = [
     "WhiteningProcessor",
-    "scaled_procrustes_whitened", 
+    "scaled_procrustes_whitened",
+    "scaled_procrustes_adaptive",
     "validate_sheaf_properties",
     "validate_restriction_orthogonality",
     "compute_gram_matrix",
-    "compute_gram_matrices_from_activations", 
+    "compute_gram_matrices_from_activations",
+    "compute_regularized_gram_matrix",
+    "compute_gram_matrices_with_regularization",
     "validate_gram_matrix_properties",
+    "AdaptiveTikhonovRegularizer",
+    "create_regularizer_from_config",
 ]

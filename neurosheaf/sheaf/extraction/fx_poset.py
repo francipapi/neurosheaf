@@ -56,7 +56,7 @@ class FXPosetExtractor:
                 raise ArchitectureError(f"Cannot trace model with FX: {e}")
     
     def extract_activation_filtered_poset(self, model: torch.nn.Module, 
-                                        available_activations: Set[str]) -> nx.DiGraph:
+                                        available_activations: Set[str]) -> Tuple[nx.DiGraph, Optional[Any]]:
         """
         Extracts a poset filtered to only include nodes with available activations.
         This method preserves graph connectivity by intelligently bridging gaps
@@ -68,14 +68,16 @@ class FXPosetExtractor:
                                    FX node names) that are available.
 
         Returns:
-            A NetworkX directed graph containing only the specified activation nodes.
+            A tuple of (NetworkX directed graph containing only the specified activation nodes, traced model).
         """
         try:
             traced = fx.symbolic_trace(model)
-            return self._build_activation_filtered_poset(traced.graph, available_activations)
+            poset = self._build_activation_filtered_poset(traced.graph, available_activations)
+            return poset, traced
         except Exception as e:
             logger.warning(f"FX tracing for filtered poset failed: {e}. Using standard poset extraction.")
-            return self.extract_poset(model)
+            fallback_poset = self.extract_poset(model)
+            return fallback_poset, None
 
     def _build_poset_from_graph(self, graph: fx.Graph) -> nx.DiGraph:
         """Builds a poset from a full FX graph, including all activation nodes."""

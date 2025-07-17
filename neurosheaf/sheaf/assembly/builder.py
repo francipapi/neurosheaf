@@ -19,7 +19,9 @@ from ..core import (
     WhiteningProcessor, 
     scaled_procrustes_whitened,
     compute_gram_matrices_from_activations,
-    validate_sheaf_properties
+    compute_gram_matrices_with_regularization,
+    validate_sheaf_properties,
+    AdaptiveTikhonovRegularizer
 )
 from ..extraction import FXPosetExtractor, create_unified_activation_dict, extract_activations_fx
 from .restrictions import RestrictionManager
@@ -49,7 +51,9 @@ class SheafBuilder:
     def build_from_activations(self, 
                                 model: nn.Module, 
                                 input_tensor: torch.Tensor,
-                                validate: bool = True) -> Sheaf:
+                                validate: bool = True,
+                                use_gram_regularization: bool = False,
+                                regularization_config: Optional[Dict[str, Any]] = None) -> Sheaf:
             """
             Builds a sheaf from a model and an example input tensor.
 
@@ -57,6 +61,8 @@ class SheafBuilder:
                 model: The PyTorch model to analyze.
                 input_tensor: An example input tensor to run the forward pass.
                 validate: Whether to validate the final sheaf's properties.
+                use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices.
+                regularization_config: Configuration for Tikhonov regularization (if None, uses defaults).
 
             Returns:
                 A constructed Sheaf object with whitened stalks and restrictions.
@@ -70,27 +76,140 @@ class SheafBuilder:
                 
                 # 2. Extract poset filtered by the keys of our new activation dict.
                 available_activations = set(activations.keys())
-                poset = self.poset_extractor.extract_activation_filtered_poset(model, available_activations)
+                poset, traced_model = self.poset_extractor.extract_activation_filtered_poset(model, available_activations)
                 
                 # 3. Compute Gram matrices from the extracted activations.
                 # We must filter the activations to only those nodes present in the final poset.
                 poset_nodes = set(poset.nodes())
                 filtered_activations = {k: v for k, v in activations.items() if k in poset_nodes}
-                gram_matrices = compute_gram_matrices_from_activations(filtered_activations)
                 
-                # 4. Compute restriction maps in whitened space.
-                # This step internally handles the whitening process.
-                restrictions = self.restriction_manager.compute_all_restrictions(gram_matrices, poset, validate=validate)
+                # Apply Tikhonov regularization if requested
+                if use_gram_regularization:
+                    # Create regularizer from config or use defaults
+                    if regularization_config is not None:
+                        from ..core import create_regularizer_from_config
+                        regularizer = create_regularizer_from_config(regularization_config)
+                    else:
+                        # Use adaptive strategy by default
+                        regularizer = AdaptiveTikhonovRegularizer(strategy='adaptive')
+                    
+                    # Infer batch size from input tensor
+                    batch_size = input_tensor.shape[0]
+                    
+                    # Compute regularized Gram matrices
+                    gram_matrices, regularization_info = compute_gram_matrices_with_regularization(
+                        filtered_activations, 
+                        regularizer=regularizer,
+                        batch_size=batch_size,
+                        validate=validate
+                    )
+                    
+                    logger.info(f"Applied Tikhonov regularization to {len(gram_matrices)} layers")
+                    
+                    # Log regularization details for problematic cases
+                    for layer_name, reg_info in regularization_info.items():
+                        if reg_info.get('regularized', False):
+                            condition_before = reg_info.get('condition_number', 'N/A')
+                            condition_after = reg_info.get('post_condition_number', 'N/A')
+                            lambda_val = reg_info.get('regularization_strength', 'N/A')
+                            logger.info(f"Layer {layer_name}: λ={lambda_val:.2e}, "
+                                      f"condition {condition_before:.2e} → {condition_after:.2e}")
+                else:
+                    # Standard Gram matrix computation without regularization
+                    gram_matrices = compute_gram_matrices_from_activations(filtered_activations)
+                    regularization_info = {}
                 
-                # 5. Define stalks for the sheaf. For whitened sheaves, stalks are identity matrices.
-                # The actual data is in the whitening maps and restriction maps.
-                stalks = {}
+                # 4. First, compute consistent ranks using torch.linalg.matrix_rank
+                # Then whiten all Gram matrices using those ranks for consistency
+                whitening_info = {}
+                whitened_grams = {}
+                
+                logger.info("Computing consistent ranks and whitening transformations for all nodes")
+                
+                # Step 4a: Compute ranks consistently using torch.linalg.matrix_rank
+                node_ranks = {}
                 for node_id, K in gram_matrices.items():
-                    # We need the rank of the Gram matrix to define the dimension of the stalk.
                     rank = torch.linalg.matrix_rank(K.float()).item()
-                    stalks[node_id] = torch.eye(int(rank))
+                    node_ranks[node_id] = rank
+                    logger.debug(f"Node {node_id}: computed rank={rank}")
                 
-                # 6. Create the final Sheaf object.
+                # Step 4b: Whiten matrices with consistent rank truncation
+                for node_id, K in gram_matrices.items():
+                    target_rank = node_ranks[node_id]
+                    
+                    # Use double precision for better numerical stability
+                    K_double = K.double()
+                    
+                    # Perform eigendecomposition in double precision
+                    eigenvals, eigenvecs = torch.linalg.eigh(K_double)
+                    eigenvals = eigenvals.real
+                    eigenvecs = eigenvecs.real
+                    
+                    # Sort in descending order
+                    indices = torch.argsort(eigenvals, descending=True)
+                    eigenvals = eigenvals[indices]
+                    eigenvecs = eigenvecs[:, indices]
+                    
+                    # Truncate to target rank (keep only top eigenvalues)
+                    eigenvals_trunc = eigenvals[:target_rank]
+                    eigenvecs_trunc = eigenvecs[:, :target_rank]
+                    
+                    # Create whitening matrix: W = Lambda^{-1/2} @ V^T  
+                    # where eigenvals_trunc are positive by construction
+                    sqrt_inv_eigenvals = torch.sqrt(1.0 / (eigenvals_trunc + 1e-15))  # Better precision
+                    W = torch.diag(sqrt_inv_eigenvals) @ eigenvecs_trunc.T  # (rank × 500)
+                    
+                    # Convert back to float32 for consistency with rest of pipeline
+                    W = W.float()
+                    
+                    # Verify whitening: K_whitened should be identity
+                    K_whitened = W @ K @ W.T
+                    
+                    whitening_info[node_id] = {
+                        'whitening_matrix': W,
+                        'eigenvalues': eigenvals_trunc,
+                        'eigenvectors': eigenvecs_trunc,
+                        'rank': target_rank
+                    }
+                    whitened_grams[node_id] = K_whitened
+                    logger.debug(f"Node {node_id}: whitened with rank={target_rank}, W.shape={W.shape}")
+                
+                # 5. Define stalks based on whitened ranks (consistent with restrictions)
+                # For whitened sheaves, stalks are identity matrices of the whitened rank
+                stalks = {}
+                for node_id, info in whitening_info.items():
+                    rank = info['rank']
+                    stalks[node_id] = torch.eye(int(rank), dtype=torch.float32)
+                    logger.debug(f"Created stalk for {node_id}: {stalks[node_id].shape}")
+                
+                # 6. Compute restriction maps using the same whitening information
+                # This ensures dimensional consistency between stalks and restrictions
+                restrictions = self.restriction_manager.compute_all_restrictions_with_whitening(
+                    gram_matrices, 
+                    whitening_info,
+                    poset, 
+                    validate=validate,
+                    regularization_info=regularization_info if use_gram_regularization else None
+                )
+                
+                # 7. Create module type mapping for visualization
+                module_types = {}
+                if traced_model is not None:
+                    try:
+                        for node_id in poset.nodes():
+                            node_attrs = poset.nodes[node_id]
+                            if node_attrs.get('op') == 'call_module':
+                                target = node_attrs.get('target', '')
+                                try:
+                                    module = traced_model.get_submodule(target)
+                                    module_types[node_id] = type(module)
+                                    module_types[target] = type(module)  # Also store by target
+                                except:
+                                    pass
+                    except Exception as e:
+                        logger.debug(f"Could not extract module types: {e}")
+                
+                # 7. Create the final Sheaf object.
                 sheaf = Sheaf(
                     poset=poset,
                     stalks=stalks,
@@ -99,11 +218,18 @@ class SheafBuilder:
                         'construction_method': 'fx_unified_whitened',
                         'nodes': len(poset.nodes()),
                         'edges': len(poset.edges()),
-                        'whitened': True
+                        'whitened': True,
+                        'gram_regularized': use_gram_regularization,
+                        'regularization_info': regularization_info if use_gram_regularization else None,
+                        'batch_size': input_tensor.shape[0],
+                        'whitening_info': whitening_info,
+                        'stalk_ranks': {node_id: info['rank'] for node_id, info in whitening_info.items()},
+                        'traced_model': traced_model,
+                        'module_types': module_types
                     }
                 )
                 
-                # 7. Validate the sheaf's mathematical properties.
+                # 8. Validate the sheaf's mathematical properties.
                 if validate:
                     validation_results = validate_sheaf_properties(sheaf.restrictions, sheaf.poset)
                     sheaf.metadata['validation'] = validation_results

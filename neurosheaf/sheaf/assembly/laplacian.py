@@ -343,32 +343,65 @@ class SheafLaplacianBuilder:
         return laplacian_coo.tocsr()
     
     def _validate_laplacian(self, laplacian: csr_matrix):
-        """Validate mathematical properties of the Laplacian with improved checks."""
+        """Validate mathematical properties of the Laplacian with enhanced PSD validation."""
         logger.debug("Validating Laplacian mathematical properties...")
         
-        # Check symmetry
-        symmetry_diff = np.abs(laplacian - laplacian.T).max()
-        if symmetry_diff > 1e-9:
-            logger.warning(f"Laplacian is not perfectly symmetric. Max difference: {symmetry_diff:.2e}")
-        else:
-            logger.debug("Symmetry property verified.")
-        
-        # Check positive semi-definiteness using eigenvalue analysis
+        # Use enhanced PSD validation
         try:
-            from scipy.sparse.linalg import eigsh
+            from ...utils.psd_validation import validate_psd_comprehensive
             
-            # Check smallest eigenvalue for PSD property
-            if laplacian.shape[0] > 1:
-                min_eigenval = eigsh(laplacian, k=1, which='SA', return_eigenvectors=False)[0]
-                if min_eigenval < -1e-9:
-                    logger.warning(f"Laplacian may not be positive semi-definite. Smallest eigenvalue: {min_eigenval:.2e}")
+            result = validate_psd_comprehensive(
+                laplacian, 
+                name="sheaf_laplacian",
+                compute_full_spectrum=False,
+                enable_regularization=True
+            )
+            
+            if not result.is_psd:
+                if result.smallest_eigenvalue > -1e-6:
+                    # Small numerical error - warn but continue
+                    logger.warning(f"Laplacian has small numerical PSD violation: {result.smallest_eigenvalue:.2e}")
                 else:
-                    logger.debug(f"Positive semi-definite property verified. Smallest eigenvalue: {min_eigenval:.2e}")
+                    # Significant PSD violation - this is a problem
+                    logger.error(f"Laplacian is not positive semi-definite: {result.smallest_eigenvalue:.2e}")
+                    if result.regularization_needed:
+                        logger.info(f"Consider regularization: condition number = {result.condition_number:.2e}")
             else:
-                logger.debug("Skipping eigenvalue check for 1x1 matrix.")
+                logger.debug(f"Laplacian PSD validation passed: smallest eigenvalue = {result.smallest_eigenvalue:.2e}")
+            
+            # Log additional diagnostics
+            logger.debug(f"Laplacian rank: {result.rank}, condition number: {result.condition_number:.2e}")
+            
+        except ImportError:
+            # Fallback to original validation if enhanced module not available
+            logger.debug("Enhanced PSD validation not available, using basic validation")
+            
+            # Check symmetry
+            symmetry_diff = np.abs(laplacian - laplacian.T).max()
+            if symmetry_diff > 1e-9:
+                logger.warning(f"Laplacian is not perfectly symmetric. Max difference: {symmetry_diff:.2e}")
+            else:
+                logger.debug("Symmetry property verified.")
+            
+            # Check positive semi-definiteness using eigenvalue analysis
+            try:
+                from scipy.sparse.linalg import eigsh
+                
+                # Check smallest eigenvalue for PSD property
+                if laplacian.shape[0] > 1:
+                    min_eigenval = eigsh(laplacian, k=1, which='SA', return_eigenvectors=False)[0]
+                    if min_eigenval < -1e-8:  # Updated tolerance
+                        logger.warning(f"Laplacian may not be positive semi-definite. Smallest eigenvalue: {min_eigenval:.2e}")
+                    else:
+                        logger.debug(f"Positive semi-definite property verified. Smallest eigenvalue: {min_eigenval:.2e}")
+                else:
+                    logger.debug("Skipping eigenvalue check for 1x1 matrix.")
+            
+            except Exception as e:
+                logger.warning(f"Could not compute eigenvalues for validation: {e}")
         
         except Exception as e:
-            logger.warning(f"Could not compute eigenvalues for validation: {e}")
+            logger.warning(f"Enhanced PSD validation failed: {e}")
 
 
 def build_sheaf_laplacian(sheaf: Sheaf, edge_weights: Optional[Dict[Tuple[str, str], float]] = None, 

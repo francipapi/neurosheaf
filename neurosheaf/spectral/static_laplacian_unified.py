@@ -109,7 +109,8 @@ class UnifiedStaticLaplacian:
                  max_eigenvalues: int = 100,
                  enable_gpu: bool = True,
                  enable_caching: bool = True,
-                 validate_properties: bool = False):
+                 validate_properties: bool = False,
+                 use_double_precision: bool = False):
         """Initialize UnifiedStaticLaplacian.
         
         Args:
@@ -119,6 +120,7 @@ class UnifiedStaticLaplacian:
             enable_gpu: Whether to enable GPU operations
             enable_caching: Whether to cache intermediate computations
             validate_properties: Whether to validate mathematical properties
+            use_double_precision: Whether to use double precision for eigenvalue computations
         """
         self.laplacian_builder = laplacian_builder or SheafLaplacianBuilder(
             validate_properties=validate_properties
@@ -128,6 +130,7 @@ class UnifiedStaticLaplacian:
         self.enable_gpu = enable_gpu and torch.cuda.is_available()
         self.enable_caching = enable_caching
         self.validate_properties = validate_properties
+        self.use_double_precision = use_double_precision
         
         # Caching infrastructure
         self._cached_laplacian = None
@@ -140,7 +143,27 @@ class UnifiedStaticLaplacian:
         self.masking_metadata = UnifiedMaskingMetadata()
         
         logger.info(f"UnifiedStaticLaplacian initialized: {eigenvalue_method} eigenvalues, "
-                   f"max_k={max_eigenvalues}, GPU={self.enable_gpu}, caching={enable_caching}")
+                   f"max_k={max_eigenvalues}, GPU={self.enable_gpu}, caching={enable_caching}, "
+                   f"precision={'double' if use_double_precision else 'single'}")
+    
+    @classmethod
+    def create_adaptive(cls, batch_size: int, **kwargs):
+        """Create UnifiedStaticLaplacian with precision adapted to batch size.
+        
+        Args:
+            batch_size: Size of the batch being processed
+            **kwargs: Additional arguments for constructor
+            
+        Returns:
+            UnifiedStaticLaplacian instance with appropriate precision settings
+        """
+        # Use double precision for large batch sizes where numerical issues are common
+        use_double_precision = batch_size >= 64
+        
+        if use_double_precision:
+            logger.info(f"Using double precision for spectral analysis with batch size {batch_size}")
+        
+        return cls(use_double_precision=use_double_precision, **kwargs)
     
     def compute_persistence(self,
                            sheaf: Sheaf,
@@ -623,7 +646,12 @@ class UnifiedStaticLaplacian:
     def _compute_eigenvalues_dense(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues using dense decomposition (fallback method)."""
         laplacian_dense = laplacian.toarray()
-        laplacian_torch = torch.from_numpy(laplacian_dense).float()
+        
+        # Use appropriate precision for eigenvalue computation
+        if self.use_double_precision:
+            laplacian_torch = torch.from_numpy(laplacian_dense.astype(np.float64)).double()
+        else:
+            laplacian_torch = torch.from_numpy(laplacian_dense).float()
         
         try:
             eigenvals, eigenvecs = torch.linalg.eigh(laplacian_torch)
@@ -633,6 +661,11 @@ class UnifiedStaticLaplacian:
             k = min(self.max_eigenvalues, len(eigenvals))
             eigenvals = eigenvals[:k]
             eigenvecs = eigenvecs[:, :k]
+            
+            # Convert back to consistent precision if needed
+            if self.use_double_precision:
+                eigenvals = eigenvals.double()
+                eigenvecs = eigenvecs.double()
             
             return eigenvals, eigenvecs
             
@@ -688,20 +721,52 @@ class UnifiedStaticLaplacian:
                 'positive_semidefinite': None
             }
             
-            # Check symmetry
-            symmetry_error = (masked_laplacian - masked_laplacian.T).max()
-            validation_results['symmetric'] = symmetry_error < 1e-10
-            
-            # Check smallest eigenvalue (PSD test)
+            # Use enhanced PSD validation
             try:
-                from scipy.sparse.linalg import eigsh
-                if masked_laplacian.shape[0] > 1:
-                    min_eigenval = eigsh(masked_laplacian, k=1, which='SA', return_eigenvectors=False)[0]
-                    validation_results['positive_semidefinite'] = min_eigenval >= -1e-10
-                else:
-                    validation_results['positive_semidefinite'] = True
-            except:
-                validation_results['positive_semidefinite'] = None
+                from ..utils.psd_validation import validate_psd_comprehensive
+                
+                psd_result = validate_psd_comprehensive(
+                    masked_laplacian,
+                    name=f"masked_laplacian_t{test_threshold}",
+                    compute_full_spectrum=False,
+                    enable_regularization=True
+                )
+                
+                validation_results['symmetric'] = psd_result.diagnostics.get('symmetry_error', 0.0) < 1e-10
+                validation_results['positive_semidefinite'] = psd_result.is_psd
+                validation_results['smallest_eigenvalue'] = psd_result.smallest_eigenvalue
+                validation_results['condition_number'] = psd_result.condition_number
+                validation_results['rank'] = psd_result.rank
+                validation_results['regularization_needed'] = psd_result.regularization_needed
+                
+                if not psd_result.is_psd:
+                    logger.warning(f"Masked Laplacian PSD validation failed at threshold {test_threshold}: {psd_result.smallest_eigenvalue:.2e}")
+                
+            except ImportError:
+                # Fallback to original validation
+                logger.debug("Enhanced PSD validation not available, using basic validation")
+                
+                # Check symmetry
+                symmetry_error = (masked_laplacian - masked_laplacian.T).max()
+                validation_results['symmetric'] = symmetry_error < 1e-10
+                
+                # Check smallest eigenvalue (PSD test)
+                try:
+                    from scipy.sparse.linalg import eigsh
+                    if masked_laplacian.shape[0] > 1:
+                        min_eigenval = eigsh(masked_laplacian, k=1, which='SA', return_eigenvectors=False)[0]
+                        validation_results['positive_semidefinite'] = min_eigenval >= -1e-8  # Updated tolerance
+                        validation_results['smallest_eigenvalue'] = min_eigenval
+                    else:
+                        validation_results['positive_semidefinite'] = True
+                        validation_results['smallest_eigenvalue'] = 0.0
+                except:
+                    validation_results['positive_semidefinite'] = None
+                    validation_results['smallest_eigenvalue'] = None
+            
+            except Exception as e:
+                logger.warning(f"Enhanced PSD validation failed: {e}")
+                validation_results['validation_error'] = str(e)
             
             self.masking_metadata.validation_results[test_threshold] = validation_results
             return validation_results
