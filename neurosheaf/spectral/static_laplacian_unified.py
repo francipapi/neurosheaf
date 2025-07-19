@@ -24,7 +24,7 @@ import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Callable
 from scipy.sparse import csr_matrix, coo_matrix
-from scipy.sparse.linalg import lobpcg
+from scipy.sparse.linalg import lobpcg, eigsh
 import time
 from dataclasses import dataclass
 
@@ -106,7 +106,7 @@ class UnifiedStaticLaplacian:
     def __init__(self,
                  laplacian_builder: Optional[SheafLaplacianBuilder] = None,
                  eigenvalue_method: str = 'auto',
-                 max_eigenvalues: int = 100,
+                 max_eigenvalues: int = 200,
                  enable_gpu: bool = True,
                  enable_caching: bool = True,
                  validate_properties: bool = False,
@@ -598,11 +598,16 @@ class UnifiedStaticLaplacian:
     def _compute_eigenvalues(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues and eigenvectors with automatic method selection."""
         if self.eigenvalue_method == 'auto':
-            # Automatic method selection based on matrix size
-            if laplacian.shape[0] > 1000:
+            # Automatic method selection: prefer dense for reliability
+            # Only use LOBPCG for very large matrices where memory becomes an issue
+            if laplacian.shape[0] > 5000:
+                # For very large matrices (>5000), use LOBPCG to save memory
                 method = 'lobpcg'
+                logger.info(f"Using LOBPCG for large matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
             else:
+                # Default to dense method for better reliability
                 method = 'dense'
+                logger.debug(f"Using dense method for matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
         else:
             method = self.eigenvalue_method
         
@@ -612,11 +617,14 @@ class UnifiedStaticLaplacian:
             else:
                 return self._compute_eigenvalues_dense(laplacian)
         except Exception as e:
-            logger.warning(f"Eigenvalue computation failed with {method}, trying dense fallback: {e}")
-            return self._compute_eigenvalues_dense(laplacian)
+            logger.warning(f"Eigenvalue computation failed with {method}, trying fallback: {e}")
+            # Try fallback sequence: lobpcg -> dense
+            if method != 'dense':
+                logger.info("Trying dense method as final fallback...")
+                return self._compute_eigenvalues_dense(laplacian)
     
     def _compute_eigenvalues_lobpcg(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute eigenvalues using LOBPCG (efficient for sparse matrices)."""
+        """Compute eigenvalues using LOBPCG with diagonal preconditioning."""
         n = laplacian.shape[0]
         # Adaptive eigenvalue count: use matrix size or max_eigenvalues, whichever is smaller
         # For small matrices, compute all available eigenvalues
@@ -630,12 +638,23 @@ class UnifiedStaticLaplacian:
             eigenvecs = torch.ones(n, 1) / np.sqrt(n)
             return eigenvals, eigenvecs
         
+        # Create diagonal preconditioner
+        preconditioner = self._create_diagonal_preconditioner(laplacian)
+        
         # Initial guess
         X = np.random.randn(n, k)
         X = X / np.linalg.norm(X, axis=0)
         
         try:
-            eigenvals, eigenvecs = lobpcg(laplacian, X, largest=False, tol=1e-8, maxiter=1000)
+            # Use LOBPCG with diagonal preconditioning
+            eigenvals, eigenvecs = lobpcg(
+                laplacian, 
+                X, 
+                M=preconditioner,  # Diagonal preconditioner
+                largest=False, 
+                tol=1e-8, 
+                maxiter=2000
+            )
             
             if eigenvals.ndim == 0:
                 eigenvals = np.array([eigenvals])
@@ -651,10 +670,73 @@ class UnifiedStaticLaplacian:
             eigenvals_torch = eigenvals_torch[sorted_idx]
             eigenvecs_torch = eigenvecs_torch[:, sorted_idx]
             
+            logger.debug(f"LOBPCG with diagonal preconditioning converged for k={k} eigenvalues")
             return eigenvals_torch, eigenvecs_torch
             
         except Exception as e:
-            raise ComputationError(f"LOBPCG eigenvalue computation failed: {e}")
+            logger.warning(f"LOBPCG with preconditioning failed: {e}, trying without preconditioner")
+            # Fallback: try without preconditioner
+            try:
+                eigenvals, eigenvecs = lobpcg(laplacian, X, largest=False, tol=1e-8, maxiter=2000)
+                
+                if eigenvals.ndim == 0:
+                    eigenvals = np.array([eigenvals])
+                    eigenvecs = eigenvecs.reshape(-1, 1)
+                
+                eigenvals_torch = torch.from_numpy(eigenvals).float()
+                eigenvecs_torch = torch.from_numpy(eigenvecs).float()
+                eigenvals_torch = torch.clamp(eigenvals_torch, min=0.0)
+                
+                sorted_idx = torch.argsort(eigenvals_torch)
+                eigenvals_torch = eigenvals_torch[sorted_idx]
+                eigenvecs_torch = eigenvecs_torch[:, sorted_idx]
+                
+                logger.debug("LOBPCG converged without preconditioning")
+                return eigenvals_torch, eigenvecs_torch
+                
+            except Exception as e2:
+                raise ComputationError(f"LOBPCG eigenvalue computation failed: {e2}")
+    
+    def _create_diagonal_preconditioner(self, laplacian: csr_matrix) -> csr_matrix:
+        """Create diagonal preconditioner M = diag(1 / diag(L)).
+        
+        For sheaf Laplacians, diagonal entries correspond to stalk dimensions and
+        edge weights, so diagonal preconditioning helps normalize different scales.
+        
+        Args:
+            laplacian: Sparse Laplacian matrix
+            
+        Returns:
+            Diagonal preconditioner as sparse matrix
+        """
+        from scipy.sparse import diags
+        
+        # Extract diagonal elements
+        diagonal = laplacian.diagonal()
+        
+        # Create diagonal preconditioner: M = diag(1 / diag(L))
+        # Handle zero/small diagonal entries to avoid division by zero
+        diag_inv = np.zeros_like(diagonal)
+        
+        # For non-zero entries, use reciprocal
+        nonzero_mask = np.abs(diagonal) > 1e-12
+        diag_inv[nonzero_mask] = 1.0 / diagonal[nonzero_mask]
+        
+        # For zero/small entries, use identity (no preconditioning)
+        diag_inv[~nonzero_mask] = 1.0
+        
+        # Create sparse diagonal matrix
+        preconditioner = diags(diag_inv, format='csr')
+        
+        # Log preconditioning statistics
+        num_zeros = np.sum(~nonzero_mask)
+        if num_zeros > 0:
+            logger.debug(f"Diagonal preconditioner: {num_zeros}/{len(diagonal)} entries set to identity")
+        
+        condition_improvement = np.max(diagonal[nonzero_mask]) / np.min(diagonal[nonzero_mask]) if np.any(nonzero_mask) else 1.0
+        logger.debug(f"Diagonal scaling range: {condition_improvement:.2e}")
+        
+        return preconditioner
     
     def _compute_eigenvalues_dense(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues using dense decomposition (fallback method)."""
@@ -688,6 +770,7 @@ class UnifiedStaticLaplacian:
             
         except Exception as e:
             raise ComputationError(f"Dense eigenvalue computation failed: {e}")
+    
     
     def _update_masking_statistics(self, filtration_param: float, edge_mask: Dict[Tuple, bool], 
                                   edge_info: Dict):

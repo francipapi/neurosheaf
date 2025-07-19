@@ -99,7 +99,9 @@ class NeurosheafAnalyzer:
         batch_size: Optional[int] = None,
         layers: Optional[List[str]] = None,
         directed: bool = False,
-        directionality_parameter: float = 0.25
+        directionality_parameter: float = 0.25,
+        use_gram_regularization: bool = False,
+        regularization_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Perform complete neurosheaf analysis.
         
@@ -114,6 +116,8 @@ class NeurosheafAnalyzer:
             layers: Specific layers to analyze (all if None)
             directed: Whether to perform directed sheaf analysis
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
+            use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
+            regularization_config: Configuration for Tikhonov regularization (if None, uses defaults)
             
         Returns:
             Dictionary containing analysis results:
@@ -146,9 +150,14 @@ class NeurosheafAnalyzer:
         
         try:
             if directed:
-                return self._analyze_directed(model, data, directionality_parameter)
+                return self._analyze_directed(
+                    model, data, directionality_parameter, 
+                    use_gram_regularization, regularization_config
+                )
             else:
-                return self._analyze_undirected(model, data)
+                return self._analyze_undirected(
+                    model, data, use_gram_regularization, regularization_config
+                )
         except Exception as e:
             self.logger.error(f"Analysis failed: {e}")
             raise ComputationError(f"Analysis failed: {e}")
@@ -234,13 +243,16 @@ class NeurosheafAnalyzer:
         
         return memory_info
     
-    def _analyze_directed(self, model: nn.Module, data: torch.Tensor, directionality_parameter: float) -> Dict[str, Any]:
+    def _analyze_directed(self, model: nn.Module, data: torch.Tensor, directionality_parameter: float,
+                         use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
         
         Args:
             model: PyTorch model
             data: Input data tensor
             directionality_parameter: q parameter controlling directional strength
+            use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
+            regularization_config: Configuration for Tikhonov regularization
             
         Returns:
             Dictionary with directed analysis results
@@ -250,16 +262,18 @@ class NeurosheafAnalyzer:
         
         self.logger.info(f"Building directed sheaf with q={directionality_parameter}")
         
-        # Step 1: Build base real sheaf
-        sheaf_builder = SheafBuilder()
-        base_sheaf = sheaf_builder.build_from_activations(model, data)
-        
-        # Step 2: Convert to directed sheaf
+        # Build directed sheaf directly with regularization support
         directed_builder = DirectedSheafBuilder(
             directionality_parameter=directionality_parameter,
             device=self.device
         )
-        directed_sheaf = directed_builder.build_from_sheaf(base_sheaf)
+        directed_sheaf = directed_builder.build_from_activations(
+            model=model,
+            input_tensor=data,
+            validate=True,
+            use_gram_regularization=use_gram_regularization,
+            regularization_config=regularization_config
+        )
         
         # Step 3: Adapt for spectral analysis if needed
         adapter = DirectedSheafAdapter(device=self.device)
@@ -270,10 +284,11 @@ class NeurosheafAnalyzer:
         results = {
             'analysis_type': 'directed',
             'directed_sheaf': directed_sheaf,
-            'base_sheaf': base_sheaf,
             'real_laplacian': real_laplacian,
             'laplacian_metadata': laplacian_metadata,
             'directionality_parameter': directionality_parameter,
+            'use_gram_regularization': use_gram_regularization,
+            'regularization_config': regularization_config,
             'construction_time': construction_time,
             'device_info': self._get_device_info(),
             'memory_info': self._get_memory_info(),
@@ -288,12 +303,15 @@ class NeurosheafAnalyzer:
         self.logger.info(f"Directed analysis completed in {construction_time:.3f}s")
         return results
     
-    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor) -> Dict[str, Any]:
+    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor,
+                           use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Perform undirected sheaf analysis.
         
         Args:
             model: PyTorch model
             data: Input data tensor
+            use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
+            regularization_config: Configuration for Tikhonov regularization
             
         Returns:
             Dictionary with undirected analysis results
@@ -305,13 +323,19 @@ class NeurosheafAnalyzer:
         
         # Build standard real sheaf
         sheaf_builder = SheafBuilder()
-        sheaf = sheaf_builder.build_from_activations(model, data)
+        sheaf = sheaf_builder.build_from_activations(
+            model, data,
+            use_gram_regularization=use_gram_regularization,
+            regularization_config=regularization_config
+        )
         
         construction_time = time.time() - start_time
         
         results = {
             'analysis_type': 'undirected',
             'sheaf': sheaf,
+            'use_gram_regularization': use_gram_regularization,
+            'regularization_config': regularization_config,
             'construction_time': construction_time,
             'device_info': self._get_device_info(),
             'memory_info': self._get_memory_info(),
