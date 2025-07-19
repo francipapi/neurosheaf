@@ -12,6 +12,7 @@ import numpy as np
 import networkx as nx
 from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
 from neurosheaf.sheaf.construction import Sheaf
+from neurosheaf.utils import bottleneck_distance
 from ..utils.test_ground_truth import GroundTruthGenerator, PersistenceValidator
 
 
@@ -78,8 +79,8 @@ class TestPersistenceStability:
                 perturbed_result = analyzer.analyze(perturbed_sheaf, n_steps=10)
                 perturbed_diagrams = perturbed_result['diagrams']
                 
-                # Compute simplified bottleneck distance approximation
-                bottleneck_dist = self._approximate_bottleneck_distance(
+                # Compute bottleneck distance
+                bottleneck_dist = self._compute_bottleneck_distance(
                     baseline_diagrams, perturbed_diagrams
                 )
                 
@@ -214,7 +215,7 @@ class TestPersistenceStability:
         )
         
         # Compare persistence diagram stability
-        bottleneck_dist = self._approximate_bottleneck_distance(
+        bottleneck_dist = self._compute_bottleneck_distance(
             baseline_result['diagrams'], 
             perturbed_result['diagrams']
         )
@@ -296,38 +297,30 @@ class TestPersistenceStability:
         
         return max_relative_change
     
-    def _approximate_bottleneck_distance(self, diagrams1, diagrams2) -> float:
-        """Compute approximation of bottleneck distance between persistence diagrams."""
-        # Simplified bottleneck distance approximation
-        # In practice, would use more sophisticated algorithm
-        
+    def _compute_bottleneck_distance(self, diagrams1, diagrams2) -> float:
+        """Compute bottleneck distance between persistence diagrams using proper implementation."""
+        # Convert birth-death pairs to numpy arrays
         pairs1 = diagrams1['birth_death_pairs']
         pairs2 = diagrams2['birth_death_pairs']
         
         if len(pairs1) == 0 and len(pairs2) == 0:
             return 0.0
         
-        if len(pairs1) == 0 or len(pairs2) == 0:
-            # Return largest lifetime as approximation
-            all_pairs = pairs1 + pairs2
-            if all_pairs:
-                return max(pair['lifetime'] for pair in all_pairs)
-            else:
-                return 0.0
+        # Convert to numpy arrays of [birth, death] pairs
+        if len(pairs1) > 0:
+            diagram1 = np.array([[pair['birth'], pair['death']] for pair in pairs1 
+                                if pair['death'] != float('inf')])  # Filter infinite bars for now
+        else:
+            diagram1 = np.empty((0, 2))
+            
+        if len(pairs2) > 0:
+            diagram2 = np.array([[pair['birth'], pair['death']] for pair in pairs2
+                                if pair['death'] != float('inf')])  # Filter infinite bars for now
+        else:
+            diagram2 = np.empty((0, 2))
         
-        # Simple matching approximation: compare sorted lifetimes
-        lifetimes1 = sorted([pair['lifetime'] for pair in pairs1])
-        lifetimes2 = sorted([pair['lifetime'] for pair in pairs2])
-        
-        # Pad shorter list with zeros
-        max_len = max(len(lifetimes1), len(lifetimes2))
-        lifetimes1.extend([0.0] * (max_len - len(lifetimes1)))
-        lifetimes2.extend([0.0] * (max_len - len(lifetimes2)))
-        
-        # Compute maximum difference
-        max_diff = max(abs(l1 - l2) for l1, l2 in zip(lifetimes1, lifetimes2))
-        
-        return max_diff
+        # Use the proper bottleneck distance implementation
+        return bottleneck_distance(diagram1, diagram2)
     
     def _validate_feature_stability(self, baseline_features, perturbed_features):
         """Validate that features are stable under perturbations."""

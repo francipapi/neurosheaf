@@ -517,48 +517,152 @@ class EnhancedSpectralVisualizer:
         
     def plot_eigenvalue_evolution(self, eigenvalue_sequences: List[torch.Tensor], 
                                 filtration_params: List[float],
-                                title: str = "Eigenvalue Evolution") -> go.Figure:
-        """Plot eigenvalue evolution with single subplot."""
+                                title: str = "Eigenvalue Evolution",
+                                enable_scale_toggle: bool = True) -> go.Figure:
+        """Plot eigenvalue evolution with interactive scale toggle."""
         fig = go.Figure()
         
         # Prepare eigenvalue matrix
         max_eigenvals = max(len(seq) for seq in eigenvalue_sequences if len(seq) > 0)
         eigenval_matrix = np.full((max_eigenvals, len(filtration_params)), np.nan)
+        eigenval_matrix_log = np.full((max_eigenvals, len(filtration_params)), np.nan)
         
         for i, seq in enumerate(eigenvalue_sequences):
             if len(seq) > 0:
                 eigenvals = seq.detach().cpu().numpy()
-                eigenvals = np.maximum(eigenvals, 1e-12)
                 eigenval_matrix[:len(eigenvals), i] = eigenvals
+                eigenval_matrix_log[:len(eigenvals), i] = np.maximum(eigenvals, 1e-12)
                 
         # Plot ALL eigenvalue tracks (no limit)
-        n_plot = max_eigenvals
+        n_plot = max_eigenvals  # Plot all eigenvalues, no limit
         colors = self.design_system.get_colorscale('spectral')
         
         for i in range(n_plot):
-            track = eigenval_matrix[i, :]
-            valid_mask = ~np.isnan(track)
+            track_linear = eigenval_matrix[i, :]
+            track_log = eigenval_matrix_log[i, :]
+            valid_mask = ~np.isnan(track_linear)
             
             if np.any(valid_mask):
                 color_idx = int(i / n_plot * (len(colors) - 1))
                 color = colors[color_idx][1]
                 
+                # Linear trace
                 fig.add_trace(go.Scatter(
                     x=np.array(filtration_params)[valid_mask],
-                    y=track[valid_mask],
+                    y=track_linear[valid_mask],
                     mode='lines+markers',
                     name=f'λ_{i}',
                     line=dict(color=color, width=2),
-                    marker=dict(size=4)
+                    marker=dict(size=4),
+                    visible=False,  # Start with log scale (hide all linear)
+                    legendgroup=f'eigenvalue_{i}',
+                    showlegend=True if i < 20 else False  # Only show first 20 in legend to avoid clutter
+                ))
+                
+                # Log trace
+                fig.add_trace(go.Scatter(
+                    x=np.array(filtration_params)[valid_mask],
+                    y=track_log[valid_mask],
+                    mode='lines+markers',
+                    name=f'λ_{i}',
+                    line=dict(color=color, width=2),
+                    marker=dict(size=4),
+                    visible=True,  # Start with log scale
+                    legendgroup=f'eigenvalue_{i}',
+                    showlegend=False  # Don't duplicate in legend
                 ))
         
-        fig.update_layout(
-            title=title,
-            xaxis_title="Filtration Parameter",
-            yaxis_title="Eigenvalue (log scale)",
-            yaxis_type="log",
-            **self.design_system.get_layout_config()
-        )
+        # Prepare update menus for scale toggle
+        updatemenus = []
+        if enable_scale_toggle:
+            # Calculate optimal ranges
+            non_nan_linear = eigenval_matrix[~np.isnan(eigenval_matrix)]
+            non_nan_log = eigenval_matrix_log[~np.isnan(eigenval_matrix_log)]
+            
+            linear_range = None
+            log_range = None
+            
+            if len(non_nan_linear) > 0:
+                min_val = np.min(non_nan_linear)
+                max_val = np.max(non_nan_linear)
+                padding = (max_val - min_val) * 0.1
+                linear_range = [min_val - padding, max_val + padding]
+                
+                min_val_log = np.min(non_nan_log)
+                max_val_log = np.max(non_nan_log)
+                log_range = [np.log10(min_val_log * 0.1), np.log10(max_val_log * 10)]
+            
+            # Create visibility arrays
+            n_traces = n_plot * 2
+            linear_visibility = []
+            log_visibility = []
+            
+            for i in range(n_plot):
+                linear_visibility.extend([True, False])  # Show ALL linear, hide ALL log
+                log_visibility.extend([False, True])     # Hide ALL linear, show ALL log
+            
+            updatemenus = [
+                {
+                    "buttons": [
+                        {
+                            "label": "Linear Scale",
+                            "method": "update",
+                            "args": [
+                                {"visible": linear_visibility},
+                                {
+                                    "yaxis": {
+                                        "title": "Eigenvalue",
+                                        "type": "linear",
+                                        "showgrid": True,
+                                        "gridcolor": "lightgray",
+                                        "range": linear_range
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "label": "Log Scale",
+                            "method": "update", 
+                            "args": [
+                                {"visible": log_visibility},
+                                {
+                                    "yaxis": {
+                                        "title": "Eigenvalue (log scale)",
+                                        "type": "log",
+                                        "showgrid": True,
+                                        "gridcolor": "lightgray",
+                                        "range": log_range
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "direction": "left",
+                    "pad": {"r": 10, "t": 10},
+                    "showactive": True,
+                    "type": "buttons",
+                    "x": 0.01,
+                    "xanchor": "left",
+                    "y": 1.02,
+                    "yanchor": "top",
+                    "bgcolor": "#f0f0f0",
+                    "bordercolor": "#cccccc",
+                    "borderwidth": 1,
+                    "font": {"size": 12}
+                }
+            ]
+        
+        # Apply layout configuration
+        layout_config = self.design_system.get_layout_config()
+        layout_config.update({
+            'title': title,
+            'xaxis_title': "Filtration Parameter",
+            'yaxis_title': "Eigenvalue (log scale)",
+            'yaxis_type': "log",
+            'updatemenus': updatemenus
+        })
+        
+        fig.update_layout(**layout_config)
         
         return fig
         

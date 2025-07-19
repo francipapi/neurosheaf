@@ -229,6 +229,14 @@ class UnifiedStaticLaplacian:
             from .tracker import SubspaceTracker
             tracker = SubspaceTracker()
             
+            # MATHEMATICAL CLARIFICATION: Filtration semantics for threshold filtration
+            # With threshold function (weight >= param) and increasing parameters:
+            # - Higher parameters → fewer edges kept → decreasing complexity
+            # - This is a DECREASING COMPLEXITY filtration 
+            # - However, the tracker uses 'increasing' semantics for birth < death ordering
+            # - The parameter name 'increasing' refers to parameter ordering, not complexity
+            filtration_direction = 'increasing'
+            
             tracking_info = tracker.track_eigenspaces(
                 eigenvalue_sequences,
                 eigenvector_sequences,
@@ -610,7 +618,12 @@ class UnifiedStaticLaplacian:
     def _compute_eigenvalues_lobpcg(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues using LOBPCG (efficient for sparse matrices)."""
         n = laplacian.shape[0]
-        k = min(self.max_eigenvalues, n - 1)
+        # Adaptive eigenvalue count: use matrix size or max_eigenvalues, whichever is smaller
+        # For small matrices, compute all available eigenvalues
+        if n <= 50:
+            k = n - 1  # Compute all eigenvalues for small matrices
+        else:
+            k = min(self.max_eigenvalues, n - 1)  # Use limit for large matrices
         
         if k <= 0:
             eigenvals = torch.zeros(1)
@@ -657,8 +670,12 @@ class UnifiedStaticLaplacian:
             eigenvals, eigenvecs = torch.linalg.eigh(laplacian_torch)
             eigenvals = torch.clamp(eigenvals, min=0.0)
             
-            # Return only the smallest eigenvalues
-            k = min(self.max_eigenvalues, len(eigenvals))
+            # Return appropriate number of smallest eigenvalues
+            n = len(eigenvals)
+            if n <= 50:
+                k = n  # Return all eigenvalues for small matrices
+            else:
+                k = min(self.max_eigenvalues, n)  # Use limit for large matrices
             eigenvals = eigenvals[:k]
             eigenvecs = eigenvecs[:, :k]
             

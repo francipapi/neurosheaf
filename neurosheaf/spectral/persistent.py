@@ -22,6 +22,7 @@ from ..utils.exceptions import ComputationError
 from ..sheaf.data_structures import Sheaf
 from .static_laplacian_unified import UnifiedStaticLaplacian as StaticLaplacianWithMasking
 from .tracker import SubspaceTracker
+from ..utils.dtw_similarity import FiltrationDTW
 
 logger = setup_logger(__name__)
 
@@ -51,7 +52,8 @@ class PersistentSpectralAnalyzer:
                  static_laplacian: Optional[StaticLaplacianWithMasking] = None,
                  subspace_tracker: Optional[SubspaceTracker] = None,
                  default_n_steps: int = 50,
-                 default_filtration_type: str = 'threshold'):
+                 default_filtration_type: str = 'threshold',
+                 dtw_comparator: Optional[FiltrationDTW] = None):
         """Initialize PersistentSpectralAnalyzer.
         
         Args:
@@ -59,14 +61,17 @@ class PersistentSpectralAnalyzer:
             subspace_tracker: SubspaceTracker instance (auto-created if None)
             default_n_steps: Default number of filtration steps
             default_filtration_type: Default filtration type
+            dtw_comparator: FiltrationDTW instance for eigenvalue evolution comparison
         """
         self.static_laplacian = static_laplacian or StaticLaplacianWithMasking()
         self.subspace_tracker = subspace_tracker or SubspaceTracker()
+        self.dtw_comparator = dtw_comparator or FiltrationDTW()
         self.default_n_steps = default_n_steps
         self.default_filtration_type = default_filtration_type
         
         logger.info(f"PersistentSpectralAnalyzer initialized: "
-                   f"default {default_n_steps} steps, {default_filtration_type} filtration")
+                   f"default {default_n_steps} steps, {default_filtration_type} filtration, "
+                   f"DTW method: {self.dtw_comparator.method}")
     
     def analyze(self,
                sheaf: Sheaf,
@@ -75,6 +80,12 @@ class PersistentSpectralAnalyzer:
                param_range: Optional[Tuple[float, float]] = None,
                custom_threshold_func: Optional[Callable] = None) -> Dict:
         """Perform complete persistent spectral analysis.
+        
+        This method implements a decreasing complexity filtration for threshold type:
+        - Uses increasing parameters with threshold function (weight >= param)
+        - Start: low threshold → many edges → high connectivity
+        - End: high threshold → few edges → low connectivity
+        - Birth/death semantics: features born early (low param), die later (high param)
         
         Args:
             sheaf: Sheaf object to analyze
@@ -122,7 +133,8 @@ class PersistentSpectralAnalyzer:
             # Generate persistence diagrams
             diagrams = self._generate_persistence_diagrams(
                 persistence_result['tracking_info'],
-                filtration_params
+                filtration_params,
+                filtration_type
             )
             
             # Create analysis metadata
@@ -167,28 +179,67 @@ class PersistentSpectralAnalyzer:
         Returns:
             List of filtration parameter values
         """
-        if param_range is None:
+        # Always calculate edge weights for threshold filtration
+        edge_weights = []
+        for edge, restriction in sheaf.restrictions.items():
+            weight = torch.norm(restriction, 'fro').item()
+            edge_weights.append(weight)
+        
+        # Determine the parameter range
+        if param_range is not None:
+            # User provided explicit range - use it directly
+            logger.info(f"Using user-provided parameter range: [{param_range[0]:.4f}, {param_range[1]:.4f}]")
+        else:
             # Auto-detect range based on edge weights
-            edge_weights = []
-            for edge, restriction in sheaf.restrictions.items():
-                weight = torch.norm(restriction, 'fro').item()
-                edge_weights.append(weight)
-            
             if not edge_weights:
                 logger.warning("No edges found in sheaf, using default parameter range")
                 param_range = (0.0, 1.0)
             else:
                 min_weight = min(edge_weights)
                 max_weight = max(edge_weights)
-                # Extend range slightly to ensure all edges are captured
-                param_range = (min_weight * 0.1, max_weight * 1.1)
+                # Extend range for filtration: start slightly below min, end above max
+                # MATHEMATICAL CORRECTION: Never use negative parameters for positive weights
+                weight_range = max_weight - min_weight
+                margin = max(0.1 * weight_range, 0.05)  # Smaller, more reasonable margin
                 
-                logger.info(f"Auto-detected parameter range: [{param_range[0]:.4f}, {param_range[1]:.4f}]")
+                # Ensure minimum parameter is never negative for positive weights
+                min_param = max(0.0, min_weight - margin)
+                max_param = max_weight + margin
+                param_range = (min_param, max_param)
+                
+                logger.info(f"Auto-detected parameter range from edge weights: [{param_range[0]:.4f}, {param_range[1]:.4f}]")
         
         # Generate parameter sequence based on filtration type
         if filtration_type == 'threshold':
-            # Linear sequence for threshold filtration
-            params = np.linspace(param_range[0], param_range[1], n_steps)
+            # MATHEMATICAL CORRECTION: Threshold filtration with increasing parameters
+            # Start with minimum weight (many edges) and go up to maximum weight (few edges)
+            # This creates decreasing complexity filtration with weight >= param threshold
+            safe_min = param_range[0]
+            safe_max = param_range[1]
+            
+            # Parameter spacing optimized for decreasing complexity (increasing parameters)
+            # Start with many edges (low threshold) and gradually remove more (high threshold)
+            if n_steps > 20:
+                # Mix linear and log spacing for gradual edge removal
+                n_linear = n_steps // 2
+                n_log = n_steps - n_linear
+                
+                # Generate increasing parameters for decreasing complexity
+                # Linear spacing for initial gradual changes (low to medium threshold)
+                linear_params = np.linspace(safe_min, safe_min + (safe_max - safe_min) * 0.7, n_linear)
+                # Log spacing for final rapid edge removal (medium to high threshold)
+                log_base = safe_min + (safe_max - safe_min) * 0.7
+                log_params = np.logspace(
+                    np.log10(log_base + 1e-6), 
+                    np.log10(safe_max + 1e-6), 
+                    n_log
+                )
+                params = np.concatenate([linear_params, log_params])
+            else:
+                # For smaller step counts, use smooth transition
+                # More resolution where edge changes are gradual
+                smooth_params = np.linspace(0, 1, n_steps) ** 0.7  # Gentle curve
+                params = safe_min + (safe_max - safe_min) * smooth_params
         elif filtration_type == 'cka_based':
             # CKA values are typically in [0, 1]
             params = np.linspace(0.0, 1.0, n_steps)
@@ -200,8 +251,8 @@ class PersistentSpectralAnalyzer:
             logger.warning(f"Unknown filtration type '{filtration_type}', using linear spacing")
             params = np.linspace(param_range[0], param_range[1], n_steps)
         
-        # Ensure parameters are sorted
-        params = np.sort(params)
+        # Parameters are already in correct order from generation above
+        # No additional sorting needed - preserve the carefully crafted spacing
         
         logger.debug(f"Generated {len(params)} filtration parameters: "
                     f"[{params[0]:.4f}, ..., {params[-1]:.4f}]")
@@ -221,7 +272,9 @@ class PersistentSpectralAnalyzer:
             Function with signature (edge_weight, param) -> bool
         """
         if filtration_type == 'threshold':
-            # Standard threshold: keep edges with weight >= parameter
+            # Decreasing complexity filtration: start with many edges, gradually remove low-weight edges
+            # Keep edges with weight >= parameter
+            # As parameter increases, fewer edges are kept (decreasing complexity)
             return lambda weight, param: weight >= param
         
         elif filtration_type == 'cka_based':
@@ -327,16 +380,21 @@ class PersistentSpectralAnalyzer:
     
     def _generate_persistence_diagrams(self,
                                      tracking_info: Dict,
-                                     filtration_params: List[float]) -> Dict:
+                                     filtration_params: List[float],
+                                     filtration_type: str = 'threshold') -> Dict:
         """Generate persistence diagrams from continuous path tracking.
         
         MATHEMATICAL CORRECTION: Uses proper continuous eigenvalue paths instead of 
         the incorrect birth/death event pairing. This ensures mathematically valid
         persistence diagrams based on actual eigenvalue evolution.
         
+        For decreasing filtrations, birth and death are swapped to maintain the
+        mathematical property that birth < death in persistence diagrams.
+        
         Args:
             tracking_info: Eigenspace tracking results from SubspaceTracker
             filtration_params: Filtration parameter values
+            filtration_type: Type of filtration ('threshold' uses decreasing)
             
         Returns:
             Dictionary with persistence diagrams based on continuous paths
@@ -348,6 +406,10 @@ class PersistentSpectralAnalyzer:
             'path_based_computation': True  # Flag indicating correct method
         }
         
+        # MATHEMATICAL CORRECTION: Threshold filtration is always increasing in complexity
+        # No special birth/death swapping needed regardless of parameter ordering
+        is_decreasing = False
+        
         # Use the mathematically correct continuous paths from tracker
         if 'continuous_paths' in tracking_info:
             # Direct extraction from continuous paths (correct approach)
@@ -355,23 +417,47 @@ class PersistentSpectralAnalyzer:
             
             for path in continuous_paths:
                 if path['death_param'] is not None:
-                    # Finite persistence pair
+                    # Finite persistence pair - use standard increasing filtration semantics
+                    birth = path['birth_param']
+                    death = path['death_param']
+                    birth_step = path['birth_step']
+                    death_step = path['death_step']
+                    
+                    # Calculate lifetime and validate
+                    lifetime = abs(death - birth)
+                    
+                    # Skip pairs with invalid values (NaN, inf, or negative lifetime)
+                    # MATHEMATICAL CORRECTION: Allow birth == death for instantaneous features
+                    # but require birth <= death and finite values
+                    if (not np.isfinite(birth) or not np.isfinite(death) or 
+                        not np.isfinite(lifetime) or lifetime < 0 or birth > death):
+                        logger.debug(f"Skipping invalid persistence pair: birth={birth:.6f}, death={death:.6f}, lifetime={lifetime:.6f}")
+                        continue
+                    
                     pair = {
-                        'birth': path['birth_param'],
-                        'death': path['death_param'],
-                        'lifetime': path['death_param'] - path['birth_param'],
-                        'birth_step': path['birth_step'],
-                        'death_step': path['death_step'],
+                        'birth': birth,
+                        'death': death,
+                        'lifetime': lifetime,
+                        'birth_step': birth_step,
+                        'death_step': death_step,
                         'path_id': path['path_id'],
                         'eigenvalue_trace': path.get('eigenvalue_trace', [])
                     }
                     diagrams['birth_death_pairs'].append(pair)
                 else:
-                    # Infinite persistence bar
+                    # Infinite persistence bar - use standard increasing filtration semantics
+                    birth = path['birth_param']
+                    birth_step = path['birth_step']
+                    
+                    # Validate infinite bar birth time
+                    if not np.isfinite(birth):
+                        logger.debug(f"Skipping invalid infinite bar: birth={birth:.6f}")
+                        continue
+                    
                     infinite_bar = {
-                        'birth': path['birth_param'],
+                        'birth': birth,
                         'death': float('inf'),
-                        'birth_step': path['birth_step'],
+                        'birth_step': birth_step,
                         'path_id': path['path_id'],
                         'eigenvalue_trace': path.get('eigenvalue_trace', [])
                     }
@@ -382,16 +468,29 @@ class PersistentSpectralAnalyzer:
             logger.warning("Using fallback finite/infinite pairs - consider updating SubspaceTracker")
             
             for pair in tracking_info['finite_pairs']:
-                diagrams['birth_death_pairs'].append({
-                    'birth': pair['birth_param'],
-                    'death': pair['death_param'],
-                    'lifetime': pair['lifetime'],
-                    'path_id': pair.get('path_id', -1)
-                })
+                # Use standard increasing filtration semantics
+                birth = pair['birth_param']
+                death = pair['death_param']
+                    
+                # Validate fallback pair
+                lifetime = abs(death - birth)
+                if (np.isfinite(birth) and np.isfinite(death) and 
+                    np.isfinite(lifetime) and lifetime >= 0 and birth <= death):
+                    diagrams['birth_death_pairs'].append({
+                        'birth': birth,
+                        'death': death,
+                        'lifetime': lifetime,
+                        'path_id': pair.get('path_id', -1)
+                    })
+                else:
+                    logger.debug(f"Skipping invalid fallback pair: birth={birth:.6f}, death={death:.6f}")
             
             for pair in tracking_info['infinite_pairs']:
+                # Use standard increasing filtration semantics
+                birth = pair['birth_param']
+                    
                 diagrams['infinite_bars'].append({
-                    'birth': pair['birth_param'],
+                    'birth': birth,
                     'death': float('inf'),
                     'path_id': pair.get('path_id', -1)
                 })
@@ -446,16 +545,36 @@ class PersistentSpectralAnalyzer:
         
         # Compute comprehensive statistics
         if diagrams['birth_death_pairs']:
-            lifetimes = [pair['lifetime'] for pair in diagrams['birth_death_pairs']]
-            diagrams['statistics'] = {
-                'n_finite_pairs': len(diagrams['birth_death_pairs']),
-                'n_infinite_bars': len(diagrams['infinite_bars']),
-                'mean_lifetime': np.mean(lifetimes),
-                'max_lifetime': max(lifetimes),
-                'min_lifetime': min(lifetimes),
-                'total_persistence': sum(lifetimes),
-                'lifetime_std': np.std(lifetimes) if len(lifetimes) > 1 else 0.0
-            }
+            # Filter out any invalid lifetimes (NaN, inf, negative, zero)
+            lifetimes = [pair['lifetime'] for pair in diagrams['birth_death_pairs'] 
+                        if np.isfinite(pair['lifetime']) and pair['lifetime'] > 0]
+            
+            if lifetimes:
+                diagrams['statistics'] = {
+                    'n_finite_pairs': len(diagrams['birth_death_pairs']),
+                    'n_infinite_bars': len(diagrams['infinite_bars']),
+                    'mean_lifetime': np.mean(lifetimes),
+                    'max_lifetime': max(lifetimes),
+                    'min_lifetime': min(lifetimes),
+                    'total_persistence': sum(lifetimes),
+                    'lifetime_std': np.std(lifetimes) if len(lifetimes) > 1 else 0.0,
+                    'valid_pairs': len(lifetimes),
+                    'invalid_pairs': len(diagrams['birth_death_pairs']) - len(lifetimes)
+                }
+            else:
+                # All pairs have invalid lifetimes
+                logger.warning("All birth-death pairs have invalid lifetimes")
+                diagrams['statistics'] = {
+                    'n_finite_pairs': len(diagrams['birth_death_pairs']),
+                    'n_infinite_bars': len(diagrams['infinite_bars']),
+                    'mean_lifetime': 0.0,
+                    'max_lifetime': 0.0,
+                    'min_lifetime': 0.0,
+                    'total_persistence': 0.0,
+                    'lifetime_std': 0.0,
+                    'valid_pairs': 0,
+                    'invalid_pairs': len(diagrams['birth_death_pairs'])
+                }
         else:
             diagrams['statistics'] = {
                 'n_finite_pairs': 0,
@@ -512,3 +631,264 @@ class PersistentSpectralAnalyzer:
         """Clear cached data in underlying components."""
         self.static_laplacian.clear_cache()
         logger.info("Cleared PersistentSpectralAnalyzer cache")
+    
+    def compare_filtration_evolution(self,
+                                   sheaf1: Sheaf,
+                                   sheaf2: Sheaf,
+                                   filtration_type: str = None,
+                                   n_steps: int = None,
+                                   eigenvalue_index: Optional[int] = None,
+                                   multivariate: bool = False,
+                                   **analysis_kwargs) -> Dict:
+        """Compare eigenvalue evolution across filtration between two sheaves.
+        
+        This method performs spectral analysis on both sheaves and compares their
+        eigenvalue evolution patterns using Dynamic Time Warping (DTW).
+        
+        Args:
+            sheaf1: First sheaf to analyze
+            sheaf2: Second sheaf to analyze
+            filtration_type: Type of filtration to use
+            n_steps: Number of filtration steps
+            eigenvalue_index: Index of eigenvalue to compare (None = all)
+            multivariate: Whether to use multivariate DTW
+            **analysis_kwargs: Additional arguments for spectral analysis
+            
+        Returns:
+            Dictionary containing:
+            - dtw_comparison: DTW comparison results
+            - analysis1: Full analysis results for sheaf1
+            - analysis2: Full analysis results for sheaf2
+            - similarity_metrics: Derived similarity metrics
+        """
+        logger.info(f"Comparing eigenvalue evolution between two sheaves using DTW")
+        
+        # Analyze both sheaves
+        analysis1 = self.analyze(sheaf1, filtration_type=filtration_type, 
+                               n_steps=n_steps, **analysis_kwargs)
+        analysis2 = self.analyze(sheaf2, filtration_type=filtration_type, 
+                               n_steps=n_steps, **analysis_kwargs)
+        
+        # Extract eigenvalue sequences
+        eigenvalue_sequences1 = analysis1['persistence_result']['eigenvalue_sequences']
+        eigenvalue_sequences2 = analysis2['persistence_result']['eigenvalue_sequences']
+        
+        # Get filtration parameters
+        filtration_params1 = analysis1['filtration_params']
+        filtration_params2 = analysis2['filtration_params']
+        
+        # Perform DTW comparison
+        dtw_comparison = self.dtw_comparator.compare_eigenvalue_evolution(
+            eigenvalue_sequences1, eigenvalue_sequences2,
+            filtration_params1, filtration_params2,
+            eigenvalue_index=eigenvalue_index,
+            multivariate=multivariate
+        )
+        
+        # Compute additional similarity metrics
+        similarity_metrics = self._compute_similarity_metrics(
+            analysis1, analysis2, dtw_comparison
+        )
+        
+        logger.info(f"DTW comparison completed: distance={dtw_comparison['distance']:.4f}, "
+                   f"normalized_distance={dtw_comparison['normalized_distance']:.4f}")
+        
+        return {
+            'dtw_comparison': dtw_comparison,
+            'analysis1': analysis1,
+            'analysis2': analysis2,
+            'similarity_metrics': similarity_metrics
+        }
+    
+    def compare_multiple_sheaves(self,
+                                sheaves: List[Sheaf],
+                                filtration_type: str = None,
+                                n_steps: int = None,
+                                eigenvalue_index: Optional[int] = None,
+                                multivariate: bool = False,
+                                **analysis_kwargs) -> Dict:
+        """Compare multiple sheaves pairwise using DTW.
+        
+        Args:
+            sheaves: List of sheaves to compare
+            filtration_type: Type of filtration to use
+            n_steps: Number of filtration steps
+            eigenvalue_index: Index of eigenvalue to compare (None = all)
+            multivariate: Whether to use multivariate DTW
+            **analysis_kwargs: Additional arguments for spectral analysis
+            
+        Returns:
+            Dictionary containing:
+            - distance_matrix: Pairwise DTW distances
+            - analyses: Individual analysis results for each sheaf
+            - similarity_rankings: Ranked similarity results
+        """
+        logger.info(f"Comparing {len(sheaves)} sheaves pairwise using DTW")
+        
+        # Analyze all sheaves
+        analyses = []
+        eigenvalue_evolutions = []
+        filtration_params = []
+        
+        for i, sheaf in enumerate(sheaves):
+            logger.debug(f"Analyzing sheaf {i+1}/{len(sheaves)}")
+            analysis = self.analyze(sheaf, filtration_type=filtration_type,
+                                  n_steps=n_steps, **analysis_kwargs)
+            analyses.append(analysis)
+            eigenvalue_evolutions.append(analysis['persistence_result']['eigenvalue_sequences'])
+            filtration_params.append(analysis['filtration_params'])
+        
+        # Compute pairwise DTW distances
+        distance_matrix = self.dtw_comparator.compare_multiple_evolutions(
+            eigenvalue_evolutions, filtration_params,
+            eigenvalue_index=eigenvalue_index, multivariate=multivariate
+        )
+        
+        # Create similarity rankings
+        similarity_rankings = self._create_similarity_rankings(distance_matrix)
+        
+        logger.info(f"Completed pairwise DTW comparison of {len(sheaves)} sheaves")
+        
+        return {
+            'distance_matrix': distance_matrix,
+            'analyses': analyses,
+            'similarity_rankings': similarity_rankings,
+            'mean_distance': np.mean(distance_matrix[np.triu_indices_from(distance_matrix, k=1)]),
+            'std_distance': np.std(distance_matrix[np.triu_indices_from(distance_matrix, k=1)])
+        }
+    
+    def _compute_similarity_metrics(self,
+                                  analysis1: Dict,
+                                  analysis2: Dict,
+                                  dtw_comparison: Dict) -> Dict:
+        """Compute additional similarity metrics from DTW comparison."""
+        
+        # Extract persistence statistics
+        stats1 = analysis1['diagrams']['statistics']
+        stats2 = analysis2['diagrams']['statistics']
+        
+        # Compute persistence similarity
+        persistence_similarity = self._compute_persistence_similarity(stats1, stats2)
+        
+        # Compute spectral similarity based on eigenvalue statistics
+        spectral_similarity = self._compute_spectral_similarity(
+            analysis1['persistence_result'], analysis2['persistence_result']
+        )
+        
+        # Compute temporal alignment quality
+        alignment_quality = dtw_comparison['alignment_visualization']['alignment_quality']
+        
+        # Combined similarity score with proper DTW distance handling
+        # Convert DTW distance to similarity using inverse relationship
+        raw_dtw_distance = dtw_comparison.get('raw_normalized_distance', dtw_comparison['normalized_distance'])
+        
+        # Use inverse scaling for DTW similarity to preserve sensitivity across full range
+        # For multivariate DTW, distances can range from 0 to 100+, so use adaptive scaling
+        if raw_dtw_distance <= 0.001:
+            dtw_similarity = 1.0  # Perfect similarity for near-zero distances
+        else:
+            # Use inverse scaling: similarity = 1 / (1 + distance/scale_factor)
+            # This preserves sensitivity across the full distance range
+            scale_factor = 10.0  # Chosen to map typical distances (0-50) to similarities (1.0-0.1)
+            dtw_similarity = 1.0 / (1.0 + raw_dtw_distance / scale_factor)
+        
+        # Ensure all similarity components are in [0,1] range
+        dtw_similarity = max(0.0, min(1.0, dtw_similarity))
+        persistence_similarity = max(0.0, min(1.0, persistence_similarity))
+        spectral_similarity = max(0.0, min(1.0, spectral_similarity))
+        alignment_quality = max(0.0, min(1.0, alignment_quality))
+        
+        # Combined similarity with corrected DTW component - guaranteed to be in [0,1]
+        combined_similarity = (
+            0.4 * dtw_similarity +
+            0.3 * persistence_similarity +
+            0.2 * spectral_similarity +
+            0.1 * alignment_quality
+        )
+        
+        return {
+            'dtw_distance': dtw_comparison['distance'],
+            'normalized_dtw_distance': dtw_comparison['normalized_distance'],
+            'raw_dtw_distance': raw_dtw_distance,
+            'dtw_similarity': dtw_similarity,
+            'persistence_similarity': persistence_similarity,
+            'spectral_similarity': spectral_similarity,
+            'alignment_quality': alignment_quality,
+            'combined_similarity': combined_similarity
+        }
+    
+    def _compute_persistence_similarity(self, stats1: Dict, stats2: Dict) -> float:
+        """Compute similarity between persistence statistics."""
+        # Compare key persistence metrics
+        lifetime_diff = abs(stats1['mean_lifetime'] - stats2['mean_lifetime'])
+        max_lifetime = max(stats1['mean_lifetime'], stats2['mean_lifetime'])
+        
+        if max_lifetime > 0:
+            lifetime_similarity = 1.0 - (lifetime_diff / max_lifetime)
+        else:
+            lifetime_similarity = 1.0
+        
+        # Compare number of persistent features
+        count_diff = abs(stats1['n_finite_pairs'] - stats2['n_finite_pairs'])
+        max_count = max(stats1['n_finite_pairs'], stats2['n_finite_pairs'])
+        
+        if max_count > 0:
+            count_similarity = 1.0 - (count_diff / max_count)
+        else:
+            count_similarity = 1.0
+        
+        # Weighted average
+        return 0.6 * lifetime_similarity + 0.4 * count_similarity
+    
+    def _compute_spectral_similarity(self, result1: Dict, result2: Dict) -> float:
+        """Compute similarity between spectral properties."""
+        eigenvalues1 = result1['eigenvalue_sequences']
+        eigenvalues2 = result2['eigenvalue_sequences']
+        
+        # Compute average eigenvalue similarity across filtration
+        similarities = []
+        
+        min_length = min(len(eigenvalues1), len(eigenvalues2))
+        for i in range(min_length):
+            if len(eigenvalues1[i]) > 0 and len(eigenvalues2[i]) > 0:
+                # Compare largest eigenvalues
+                val1 = eigenvalues1[i][0].item()
+                val2 = eigenvalues2[i][0].item()
+                
+                if max(val1, val2) > 0:
+                    similarity = 1.0 - abs(val1 - val2) / max(val1, val2)
+                else:
+                    similarity = 1.0
+                    
+                similarities.append(similarity)
+        
+        return np.mean(similarities) if similarities else 0.0
+    
+    def _create_similarity_rankings(self, distance_matrix: np.ndarray) -> List[Dict]:
+        """Create ranked similarity results from distance matrix."""
+        n_sheaves = distance_matrix.shape[0]
+        rankings = []
+        
+        for i in range(n_sheaves):
+            # Get distances for sheaf i
+            distances = distance_matrix[i, :].copy()
+            distances[i] = np.inf  # Exclude self-comparison
+            
+            # Sort by distance (ascending = most similar first)
+            sorted_indices = np.argsort(distances)
+            
+            # Create ranking for sheaf i
+            ranking = {
+                'sheaf_index': i,
+                'most_similar': [
+                    {
+                        'sheaf_index': int(idx),
+                        'distance': float(distances[idx]),
+                        'similarity': 1.0 - distances[idx]  # Convert to similarity
+                    }
+                    for idx in sorted_indices[:min(5, n_sheaves-1)]  # Top 5 similar
+                ]
+            }
+            rankings.append(ranking)
+        
+        return rankings

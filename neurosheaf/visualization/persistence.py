@@ -165,9 +165,13 @@ class PersistenceVisualizer:
             # Position infinite bars above the finite points
             if pairs:
                 max_death = max([p['death'] for p in pairs])
-                inf_y_pos = max_death * 1.1
+                max_birth = max([p['birth'] for p in pairs])
+                # Place infinite bars at a visible position
+                inf_y_pos = max(max_death * 1.1, max_birth * 1.1)
             else:
-                inf_y_pos = 1.0
+                # If only infinite bars, determine position from their births
+                max_birth = max(inf_births) if inf_births else 1.0
+                inf_y_pos = max_birth * 1.1
             
             # Create hover text for infinite bars
             inf_hover_texts = []
@@ -193,6 +197,26 @@ class PersistenceVisualizer:
                 hoverinfo='text',
                 name='Infinite Features'
             ))
+            
+            # Add a horizontal line to indicate infinite features
+            fig.add_shape(
+                type="line",
+                x0=min(inf_births) * 0.95,
+                y0=inf_y_pos,
+                x1=max(inf_births) * 1.05,
+                y1=inf_y_pos,
+                line=dict(color=self.infinite_marker_color, width=1, dash="dot"),
+            )
+            
+            # Add annotation for infinite features
+            fig.add_annotation(
+                x=max(inf_births) * 1.05,
+                y=inf_y_pos,
+                text=f"∞ ({len(inf_births)} features)",
+                showarrow=False,
+                xanchor="left",
+                font=dict(color=self.infinite_marker_color, size=12)
+            )
         
         # Add diagonal line (birth = death)
         if show_diagonal and pairs:
@@ -228,6 +252,29 @@ class PersistenceVisualizer:
             plot_bgcolor='white',
             paper_bgcolor='white'
         )
+        
+        # Set axis ranges to ensure all features are visible
+        if pairs or infinite_bars:
+            # Determine x-axis range
+            all_births = []
+            if pairs:
+                all_births.extend([p['birth'] for p in pairs])
+            if infinite_bars:
+                all_births.extend([b['birth'] for b in infinite_bars])
+            
+            min_birth = min(all_births) if all_births else 0
+            max_birth = max(all_births) if all_births else 1
+            
+            # Determine y-axis range
+            if pairs:
+                max_death = max([p['death'] for p in pairs])
+                y_max = max_death * 1.3  # Extra space for infinite bars
+            else:
+                y_max = max_birth * 1.3  # Base on births if no finite pairs
+            
+            # Set ranges with some padding
+            fig.update_xaxes(range=[min_birth * 0.9, max_birth * 1.1])
+            fig.update_yaxes(range=[min_birth * 0.9, y_max])
         
         # Add grid
         fig.update_xaxes(

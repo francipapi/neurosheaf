@@ -160,7 +160,9 @@ def validate_psd_comprehensive(matrix: Union[csr_matrix, np.ndarray, torch.Tenso
                 eigenvalues = np.array([0.0])
                 diagnostics['eigenvalue_method'] = 'single_eigenvalue'
             else:
-                eigenvalues = eigsh(matrix, k=k, which='SA', return_eigenvectors=False)
+                # Use improved ARPACK parameters for better convergence
+                eigenvalues = eigsh(matrix, k=k, which='SA', return_eigenvectors=False,
+                                   maxiter=10000, tol=1e-6, ncv=min(50, n))
                 eigenvalues = np.sort(eigenvalues)
                 diagnostics['eigenvalue_method'] = 'sparse_smallest'
         except Exception as e:

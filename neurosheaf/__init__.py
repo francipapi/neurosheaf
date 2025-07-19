@@ -38,6 +38,15 @@ try:
 except ImportError:
     FXPosetExtractor = None
 
+# Import directed sheaf components
+try:
+    from .directed_sheaf import DirectedSheaf, DirectedSheafBuilder, DirectedSheafAdapter
+except ImportError:
+    # During development, directed sheaf may not be implemented yet
+    DirectedSheaf = None
+    DirectedSheafBuilder = None
+    DirectedSheafAdapter = None
+
 # Import utilities (implemented in Phase 1)
 from .utils.logging import setup_logger
 from .utils.exceptions import (
@@ -59,6 +68,10 @@ __all__ = [
     "NeurosheafAnalyzer",
     "DebiasedCKA", 
     "FXPosetExtractor",
+    # Directed sheaf components
+    "DirectedSheaf",
+    "DirectedSheafBuilder",
+    "DirectedSheafAdapter",
     # Utilities
     "setup_logger",
     "profile_memory",

@@ -50,6 +50,10 @@ dependencies = [
     "tqdm>=4.62.0",           # Progress bars
     "PyYAML>=6.0",            # Configuration files
     "psutil>=5.8.0",          # System monitoring
+    
+    # DTW dependencies for eigenvalue evolution comparison
+    "dtaidistance>=2.3.10",   # High-performance DTW implementation
+    "tslearn>=0.6.0",         # Multivariate time series analysis
 ]
 
 [project.optional-dependencies]
@@ -243,6 +247,8 @@ module = [
     "wandb.*",
     "tensorboard.*",
     "hydra.*",
+    "dtaidistance.*",
+    "tslearn.*",
 ]
 ignore_missing_imports = true
 

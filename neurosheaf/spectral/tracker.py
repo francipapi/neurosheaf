@@ -112,10 +112,20 @@ class SubspaceTracker:
         
         for path in active_paths:
             if path['death_param'] is not None:
+                birth = path['birth_param']
+                death = path['death_param']
+                lifetime = death - birth
+                
+                # Validate mathematical correctness: birth <= death for increasing parameters
+                if birth > death:
+                    logger.warning(f"Invalid persistence pair: birth={birth:.6f} > death={death:.6f}, "
+                                 f"path_id={path['path_id']}. Skipping.")
+                    continue
+                    
                 finite_pairs.append({
-                    'birth_param': path['birth_param'],
-                    'death_param': path['death_param'],
-                    'lifetime': path['death_param'] - path['birth_param'],
+                    'birth_param': birth,
+                    'death_param': death,
+                    'lifetime': lifetime,
                     'path_id': path['path_id']
                 })
             else:
@@ -458,10 +468,11 @@ class SubspaceTracker:
                 len(path['group_trace']) > 0 and 
                 path['group_trace'][-1] not in matched_prev):
                 
-                # This path dies
+                # This path dies in the transition to the current step
                 path['is_alive'] = False
-                path['death_step'] = step_idx - 1
-                path['death_param'] = path['param_trace'][-1] if path['param_trace'] else filtration_param
+                path['death_step'] = step_idx - 1  # Last step where it was alive
+                # Death parameter is the current filtration parameter where the feature disappears
+                path['death_param'] = filtration_param
                 
                 # Record death event
                 tracking_info['death_events'].append({

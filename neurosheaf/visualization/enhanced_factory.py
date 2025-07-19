@@ -442,10 +442,12 @@ class EnhancedVisualizationFactory:
         filtration_params = analysis_result['filtration_params']
         diagrams = analysis_result['diagrams']
         
-        # Eigenvalue evolution
+        # Eigenvalue evolution with scale toggle
         if eigenval_seqs:
             summary_plots['eigenvalue_evolution'] = self.spectral_visualizer.plot_eigenvalue_evolution(
-                eigenval_seqs, filtration_params, title="Eigenvalue Evolution Summary"
+                eigenval_seqs, filtration_params, 
+                title="Eigenvalue Evolution Summary",
+                enable_scale_toggle=True
             )
         
         # Spectral gap evolution
