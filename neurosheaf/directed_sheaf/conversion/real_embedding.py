@@ -253,13 +253,43 @@ class ComplexToRealEmbedding:
         # [[X, -Y], [Y, X]]
         from scipy.sparse import hstack, vstack
         
+        # Ensure proper precision for the real/imaginary parts
+        # Preserve double precision if input is complex128
+        if complex_sparse.dtype == np.complex128:
+            real_part = real_part.astype(np.float64)
+            imag_part = imag_part.astype(np.float64)
+        else:
+            real_part = real_part.astype(np.float32)
+            imag_part = imag_part.astype(np.float32)
+        
         top_row = hstack([real_part, -imag_part])
         bottom_row = hstack([imag_part, real_part])
         
         real_embedding = vstack([top_row, bottom_row])
         
+        # Validate the embedding preserves key properties for debugging
+        if self.validate_properties and complex_sparse.shape[0] < 1000:  # Only for small matrices
+            self._validate_sparse_embedding_properties(complex_sparse, real_embedding)
+        
         logger.debug(f"Embedded complex sparse matrix {complex_sparse.shape} → real sparse matrix {real_embedding.shape}")
         return real_embedding
+    
+    def _validate_sparse_embedding_properties(self, complex_sparse: csr_matrix, real_embedding: csr_matrix):
+        """Validate that sparse embedding preserves key mathematical properties."""
+        try:
+            # Check dimensions
+            expected_shape = (2 * complex_sparse.shape[0], 2 * complex_sparse.shape[1])
+            if real_embedding.shape != expected_shape:
+                logger.warning(f"Sparse embedding dimension mismatch: {real_embedding.shape} vs expected {expected_shape}")
+            
+            # Check that embedding preserves sparsity pattern approximately
+            expected_nnz = 4 * complex_sparse.nnz  # Each complex entry becomes 4 real entries
+            actual_nnz = real_embedding.nnz
+            if abs(actual_nnz - expected_nnz) > 0.1 * expected_nnz:
+                logger.warning(f"Sparse embedding nnz mismatch: {actual_nnz} vs expected ~{expected_nnz}")
+                
+        except Exception as e:
+            logger.debug(f"Sparse embedding validation failed: {e}")
     
     def embed_with_filtration_mask(self, complex_matrix: torch.Tensor, 
                                   mask: torch.Tensor) -> torch.Tensor:

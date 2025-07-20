@@ -100,6 +100,7 @@ class NeurosheafAnalyzer:
         layers: Optional[List[str]] = None,
         directed: bool = False,
         directionality_parameter: float = 0.25,
+        preserve_eigenvalues: Optional[bool] = None,
         use_gram_regularization: bool = False,
         regularization_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -116,6 +117,7 @@ class NeurosheafAnalyzer:
             layers: Specific layers to analyze (all if None)
             directed: Whether to perform directed sheaf analysis
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization (if None, uses defaults)
             
@@ -128,6 +130,7 @@ class NeurosheafAnalyzer:
                 - 'device_info': Device and hardware information
                 - 'performance': Performance metrics
                 - 'directionality_parameter': q parameter (if directed)
+                - 'preserve_eigenvalues': eigenvalue preservation setting
                 
         Raises:
             ValidationError: If input validation fails
@@ -144,19 +147,24 @@ class NeurosheafAnalyzer:
         if directed and not (0.0 <= directionality_parameter <= 1.0):
             raise ValidationError("directionality_parameter must be between 0.0 and 1.0")
         
-        # Move model and data to device
-        model = model.to(self.device)
-        data = data.to(self.device)
+        # Move model and data to device (unless eigenvalue preservation will force CPU later)
+        target_device = self.device
+        if preserve_eigenvalues and self.device.type == 'mps':
+            target_device = torch.device('cpu')
+            self.logger.info("Using CPU device for eigenvalue preservation mode (MPS doesn't support float64)")
+        
+        model = model.to(target_device)
+        data = data.to(target_device)
         
         try:
             if directed:
                 return self._analyze_directed(
-                    model, data, directionality_parameter, 
+                    model, data, directionality_parameter, preserve_eigenvalues,
                     use_gram_regularization, regularization_config
                 )
             else:
                 return self._analyze_undirected(
-                    model, data, use_gram_regularization, regularization_config
+                    model, data, preserve_eigenvalues, use_gram_regularization, regularization_config
                 )
         except Exception as e:
             self.logger.error(f"Analysis failed: {e}")
@@ -244,13 +252,15 @@ class NeurosheafAnalyzer:
         return memory_info
     
     def _analyze_directed(self, model: nn.Module, data: torch.Tensor, directionality_parameter: float,
-                         use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         preserve_eigenvalues: Optional[bool] = None, use_gram_regularization: bool = False, 
+                         regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
         
         Args:
             model: PyTorch model
             data: Input data tensor
             directionality_parameter: q parameter controlling directional strength
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
             
@@ -263,20 +273,25 @@ class NeurosheafAnalyzer:
         self.logger.info(f"Building directed sheaf with q={directionality_parameter}")
         
         # Build directed sheaf directly with regularization support
+        # Use the device determined at the API level (CPU if eigenvalue preservation on MPS)
+        builder_device = next(model.parameters()).device  # Use the device the model is already on
+        
         directed_builder = DirectedSheafBuilder(
             directionality_parameter=directionality_parameter,
-            device=self.device
+            device=builder_device
         )
         directed_sheaf = directed_builder.build_from_activations(
             model=model,
             input_tensor=data,
             validate=True,
+            preserve_eigenvalues=preserve_eigenvalues,
             use_gram_regularization=use_gram_regularization,
             regularization_config=regularization_config
         )
         
         # Step 3: Adapt for spectral analysis if needed
-        adapter = DirectedSheafAdapter(device=self.device)
+        # Use the same device as the builder to avoid device mismatch
+        adapter = DirectedSheafAdapter(device=builder_device)
         real_laplacian, laplacian_metadata = adapter.adapt_for_spectral_analysis(directed_sheaf)
         
         construction_time = time.time() - start_time
@@ -287,6 +302,7 @@ class NeurosheafAnalyzer:
             'real_laplacian': real_laplacian,
             'laplacian_metadata': laplacian_metadata,
             'directionality_parameter': directionality_parameter,
+            'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
             'construction_time': construction_time,
@@ -303,13 +319,14 @@ class NeurosheafAnalyzer:
         self.logger.info(f"Directed analysis completed in {construction_time:.3f}s")
         return results
     
-    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor,
+    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor, preserve_eigenvalues: Optional[bool] = None,
                            use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Perform undirected sheaf analysis.
         
         Args:
             model: PyTorch model
             data: Input data tensor
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
             
@@ -322,9 +339,11 @@ class NeurosheafAnalyzer:
         self.logger.info("Building undirected sheaf")
         
         # Build standard real sheaf
+        # Use the device determined at the API level (CPU if eigenvalue preservation on MPS)
         sheaf_builder = SheafBuilder()
         sheaf = sheaf_builder.build_from_activations(
             model, data,
+            preserve_eigenvalues=preserve_eigenvalues,
             use_gram_regularization=use_gram_regularization,
             regularization_config=regularization_config
         )
@@ -334,6 +353,7 @@ class NeurosheafAnalyzer:
         results = {
             'analysis_type': 'undirected',
             'sheaf': sheaf,
+            'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
             'construction_time': construction_time,
@@ -354,6 +374,7 @@ class NeurosheafAnalyzer:
         model: nn.Module,
         data: torch.Tensor,
         directionality_parameter: float = 0.25,
+        preserve_eigenvalues: Optional[bool] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
@@ -364,6 +385,7 @@ class NeurosheafAnalyzer:
             model: PyTorch neural network model
             data: Input data tensor
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             **kwargs: Additional arguments passed to analyze()
             
         Returns:
@@ -374,6 +396,7 @@ class NeurosheafAnalyzer:
             data=data,
             directed=True,
             directionality_parameter=directionality_parameter,
+            preserve_eigenvalues=preserve_eigenvalues,
             **kwargs
         )
     
@@ -381,7 +404,8 @@ class NeurosheafAnalyzer:
         self,
         model: nn.Module,
         data: torch.Tensor,
-        directionality_parameter: float = 0.25
+        directionality_parameter: float = 0.25,
+        preserve_eigenvalues: Optional[bool] = None
     ) -> Dict[str, Any]:
         """Compare directed vs undirected analysis.
         
@@ -393,6 +417,7 @@ class NeurosheafAnalyzer:
             model: PyTorch neural network model
             data: Input data tensor
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             
         Returns:
             Dictionary containing comparison results:
@@ -404,8 +429,8 @@ class NeurosheafAnalyzer:
         self.logger.info("Starting directed vs undirected comparison...")
         
         # Perform both analyses
-        directed_results = self.analyze_directed(model, data, directionality_parameter)
-        undirected_results = self.analyze(model, data, directed=False)
+        directed_results = self.analyze_directed(model, data, directionality_parameter, preserve_eigenvalues)
+        undirected_results = self.analyze(model, data, directed=False, preserve_eigenvalues=preserve_eigenvalues)
         
         # Compute comparison metrics
         comparison = self._compute_comparison_metrics(directed_results, undirected_results)

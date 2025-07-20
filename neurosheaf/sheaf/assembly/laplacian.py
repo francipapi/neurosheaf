@@ -89,6 +89,7 @@ class LaplacianMetadata:
     construction_time: float = 0.0
     num_nonzeros: int = 0
     memory_usage: float = 0.0  # Memory usage in MB
+    construction_method: str = "standard"  # "standard" or "hodge_formulation"
     
     def __post_init__(self):
         """Initialize empty dictionaries if not provided."""
@@ -111,15 +112,18 @@ class SheafLaplacianBuilder:
     are the restriction maps from vertex stalks to the edge stalk.
     """
     
-    def __init__(self, validate_properties: bool = True, sparsity_threshold: float = 1e-12):
+    def __init__(self, validate_properties: bool = True, sparsity_threshold: float = 1e-12,
+                 regularization: float = 1e-10):
         """Initialize the Laplacian builder.
         
         Args:
             validate_properties: Whether to validate mathematical properties
             sparsity_threshold: Threshold below which values are considered zero
+            regularization: Regularization parameter for eigenvalue matrix inversion
         """
         self.validate_properties = validate_properties
         self.sparsity_threshold = sparsity_threshold
+        self.regularization = regularization
     
     def build(self, sheaf: Sheaf, edge_weights: Optional[Dict[Tuple[str, str], float]] = None) -> Tuple[csr_matrix, LaplacianMetadata]:
         """Build the sparse sheaf Laplacian with optimized performance.
@@ -148,8 +152,13 @@ class SheafLaplacianBuilder:
             if edge_weights is None:
                 edge_weights = self._compute_default_edge_weights(sheaf)
             
-            # Build Laplacian using optimized sparse assembly
-            laplacian = self._build_laplacian_optimized(sheaf, edge_weights, metadata)
+            # Build Laplacian using appropriate method based on eigenvalue preservation
+            if self._uses_eigenvalue_preservation(sheaf):
+                logger.info("Detected eigenvalue-preserving sheaf, using Hodge formulation")
+                laplacian = self._build_hodge_laplacian(sheaf, edge_weights, metadata)
+            else:
+                # Use existing standard implementation
+                laplacian = self._build_laplacian_optimized(sheaf, edge_weights, metadata)
             
             # Validate if requested
             if self.validate_properties:
@@ -208,6 +217,192 @@ class SheafLaplacianBuilder:
         
         logger.debug(f"Computed default edge weights: mean={np.mean(list(edge_weights.values())):.3f}")
         return edge_weights
+    
+    def _uses_eigenvalue_preservation(self, sheaf: Sheaf) -> bool:
+        """Check if sheaf uses eigenvalue preservation mode.
+        
+        Args:
+            sheaf: Sheaf to check
+            
+        Returns:
+            True if eigenvalue preservation is active, False otherwise
+        """
+        return (sheaf.eigenvalue_metadata is not None and 
+                sheaf.eigenvalue_metadata.preserve_eigenvalues)
+    
+    def _build_hodge_laplacian(self, sheaf: Sheaf, edge_weights: Dict[Tuple[str, str], float],
+                              metadata: LaplacianMetadata) -> csr_matrix:
+        """Build Laplacian using mathematically correct Hodge formulation.
+        
+        MATHEMATICAL FOUNDATION (corrected):
+        
+        For eigenvalue-preserving sheaf with inner products ⟨·,·⟩_Σ = ·^T Σ ·,
+        the Hodge Laplacian Δ = δ*δ has the following structure:
+        
+        For undirected edge e = {u,v} with restriction R_uv: u → v:
+        - The coboundary: (δf)_e = f_v - R_uv f_u  
+        - The adjoint coboundary: (δ*g)_u = Σ_u^{-1} R_uv^T Σ_v g_e
+                                  (δ*g)_v = Σ_v^{-1} g_e
+        
+        This gives the Hodge Laplacian blocks:
+        - Diagonal: L[u,u] = Σ_{e∋u} δ*δ contributions from all incident edges
+        - Off-diagonal: L[u,v] = -Σ_u^{-1} R_uv^T Σ_v for edge e={u,v}
+        
+        CRITICAL CORRECTION: The diagonal blocks are NOT Σ_v contributions!
+        They come from the proper Hodge theory: L[u,u] = Σ_{e∋u} (δ*δ)_{uu}
+        
+        This formulation guarantees L = L^T and L ⪰ 0 by construction.
+        
+        Args:
+            sheaf: Sheaf with eigenvalue-preserving stalks  
+            edge_weights: Edge weights dictionary
+            metadata: Laplacian metadata
+            
+        Returns:
+            Sparse symmetric PSD Laplacian matrix
+        """
+        from ..core.whitening import WhiteningProcessor
+        
+        logger.info("Building mathematically correct Hodge Laplacian")
+        
+        # Get sheaf components
+        poset = sheaf.poset
+        stalks = sheaf.stalks
+        restrictions = sheaf.restrictions
+        eigenvalue_metadata = sheaf.eigenvalue_metadata
+        
+        # Initialize sparse matrix builders  
+        rows, cols, data = [], [], []
+        
+        # Get eigenvalue matrices (Σ_v for each vertex v)
+        eigenvalue_matrices = eigenvalue_metadata.eigenvalue_matrices
+        
+        # Create whitening processor for regularized inverse computation
+        wp = WhiteningProcessor(preserve_eigenvalues=True, regularization=self.regularization)
+        
+        # Initialize diagonal accumulator for each node
+        diagonal_blocks = {}
+        for node in sorted(poset.nodes()):
+            if node in stalks and node in eigenvalue_matrices:
+                node_dim = metadata.stalk_dimensions[node]
+                Sigma_node = eigenvalue_matrices[node]
+                diagonal_blocks[node] = torch.zeros((node_dim, node_dim), 
+                                                  dtype=Sigma_node.dtype, 
+                                                  device=Sigma_node.device)
+        
+        # Process each edge exactly once for undirected formulation
+        processed_pairs = set()
+        
+        for (u, v), R_uv in restrictions.items():
+            # Skip if this edge pair already processed (for undirected treatment)
+            edge_pair = tuple(sorted([u, v]))
+            if edge_pair in processed_pairs:
+                continue
+            processed_pairs.add(edge_pair)
+            
+            if u not in eigenvalue_matrices or v not in eigenvalue_matrices:
+                logger.warning(f"Missing eigenvalue matrices for edge {u}-{v}. Skipping.")
+                continue
+            
+            # Get dimensions and offsets
+            u_offset = metadata.stalk_offsets[u]
+            v_offset = metadata.stalk_offsets[v]
+            u_dim = metadata.stalk_dimensions[u]
+            v_dim = metadata.stalk_dimensions[v]
+            
+            # Get eigenvalue matrices
+            Sigma_u = eigenvalue_matrices[u]
+            Sigma_v = eigenvalue_matrices[v]
+            weight = edge_weights.get((u, v), 1.0)
+            
+            # Compute regularized inverses
+            Sigma_u_inv = wp._compute_regularized_inverse(Sigma_u)
+            Sigma_v_inv = wp._compute_regularized_inverse(Sigma_v)
+            
+            # CORRECTED HODGE LAPLACIAN FORMULATION (dimensionally safe):
+            #
+            # The correct off-diagonal blocks, derived from the energy functional 
+            # ||δx||² = Σ (x_v - R_{uv}x_u)^T Σ_v (x_v - R_{uv}x_u), are:
+            #
+            # Off-diagonal blocks:
+            # L[u,v] = -R_{uv}^T Σ_v     (maps from v-space to u-space)
+            # L[v,u] = -Σ_v R_{uv}       (maps from u-space to v-space)
+            #
+            # This formulation is:
+            # - Dimensionally safe for different stalk dimensions
+            # - Symmetric: L[v,u]^T = (-Σ_v R_{uv})^T = -R_{uv}^T Σ_v^T = -R_{uv}^T Σ_v = L[u,v]
+            # - Positive semi-definite by construction
+            
+            # Off-diagonal block L[u,v] = -R_{uv}^T Σ_v
+            L_uv = -weight * (R_uv.T @ Sigma_v)
+            
+            # Off-diagonal block L[v,u] = -Σ_v R_{uv} 
+            L_vu = -weight * (Sigma_v @ R_uv)
+            
+            # Verify symmetry: L[v,u] should equal L[u,v]^T
+            # L[u,v]^T = (-R_{uv}^T Σ_v)^T = -Σ_v^T R_{uv} = -Σ_v R_{uv} = L[v,u] ✓
+            # (since Σ_v is symmetric)
+            
+            # Add L[u,v] block  
+            for i in range(u_dim):
+                for j in range(v_dim):
+                    value = L_uv[i, j].item()
+                    if abs(value) > self.sparsity_threshold:
+                        rows.append(u_offset + i)
+                        cols.append(v_offset + j)
+                        data.append(value)
+            
+            # Add L[v,u] block (using the computed L_vu, which equals L[u,v]^T)
+            for i in range(v_dim):
+                for j in range(u_dim):
+                    value = L_vu[i, j].item()
+                    if abs(value) > self.sparsity_threshold:
+                        rows.append(v_offset + i)
+                        cols.append(u_offset + j)
+                        data.append(value)
+            
+            # CORRECTED DIAGONAL BLOCKS:
+            # From the energy functional and your analysis:
+            # L[v,v] = deg(v)Σ_v + Σ_{w∼v} R_{vw}^T Σ_w R_{vw}
+            #
+            # For edge {u,v} with restriction R_uv: u → v:
+            # - L[u,u] gets contribution: R_{uv}^T Σ_v R_{uv} (source node)
+            # - L[v,v] gets contribution: Σ_v (target node gets identity-like term)
+            #
+            # This is dimensionally safe and mathematically consistent.
+            
+            # Contribution to L[u,u] (source node): quadratic form through restriction
+            diag_contribution_u = weight * (R_uv.T @ Sigma_v @ R_uv)
+            diagonal_blocks[u] += diag_contribution_u
+            
+            # Contribution to L[v,v] (target node): eigenvalue matrix Σ_v
+            diag_contribution_v = weight * Sigma_v
+            diagonal_blocks[v] += diag_contribution_v
+        
+        # Add all diagonal blocks to sparse matrix
+        for node, diagonal_block in diagonal_blocks.items():
+            node_offset = metadata.stalk_offsets[node]
+            node_dim = metadata.stalk_dimensions[node]
+            
+            for i in range(node_dim):
+                for j in range(node_dim):
+                    value = diagonal_block[i, j].item()
+                    if abs(value) > self.sparsity_threshold:
+                        rows.append(node_offset + i)
+                        cols.append(node_offset + j)
+                        data.append(value)
+        
+        # Create sparse matrix
+        laplacian_sparse = csr_matrix(
+            (data, (rows, cols)), 
+            shape=(metadata.total_dimension, metadata.total_dimension)
+        )
+        
+        # Update metadata
+        metadata.construction_method = "hodge_formulation"
+        
+        logger.info(f"Mathematically correct Hodge Laplacian built: {laplacian_sparse.shape}, {laplacian_sparse.nnz} nnz")
+        return laplacian_sparse
     
     def _build_laplacian_optimized(self, sheaf: Sheaf, edge_weights: Dict[Tuple[str, str], float], 
                                   metadata: LaplacianMetadata) -> csr_matrix:

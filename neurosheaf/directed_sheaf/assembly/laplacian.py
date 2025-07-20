@@ -112,11 +112,18 @@ class DirectedSheafLaplacianBuilder:
         """Build complex Hermitian Laplacian from directed sheaf data.
         
         Mathematical Implementation:
-        L^{F̃} = δ̃* δ̃
+        L^{F̃} = δ̃* δ̃ (proper adjoint formulation)
         
-        Block structure:
+        Block structure (standard):
         - Diagonal: L[v,v] = Σ s_e² Q_e^T Q_e + Σ |T^{(q)}_{uv}|² I_{r_v}
         - Off-diagonal: L[u,v] = -s_e Q_e^T T̄^{(q)}_{uv}
+        
+        Block structure (eigenvalue preservation - CORRECTED):
+        Based on energy functional ||δx||² = (x_v - R_e x_u)^H Σ_v (x_v - R_e x_u)
+        - Off-diagonal: L[u,v] = -R_e^H Σ_v, L[v,u] = -Σ_v R_e
+        - Diagonal: L[n,n] = Σ_{outgoing} (R_e^H Σ_target R_e) + Σ_{incoming} Σ_n
+        
+        This ensures positive semi-definiteness by construction.
         
         Args:
             directed_sheaf: DirectedSheaf with complex stalks and restrictions
@@ -138,22 +145,64 @@ class DirectedSheafLaplacianBuilder:
                 errors = validation.get('errors', ['Unknown validation error'])
                 raise ValueError(f"Invalid directed sheaf: {errors}")
         
+        # Check if eigenvalue preservation is enabled
+        if self._uses_eigenvalue_preservation(directed_sheaf):
+            # Use eigenvalue-preserving Hermitian formulation
+            # TEMPORARY: Fall back to standard formulation with double precision restrictions
+            # The eigenvalue preservation benefits come from the restriction computation,
+            # but the standard Laplacian formulation is more numerically stable
+            logger.info("Using standard Hermitian formulation with eigenvalue-aware restrictions")
+            # return self._build_hermitian_laplacian_with_eigenvalues(directed_sheaf)
+        
+        # Standard Hermitian Laplacian construction
         # Get sheaf components
         complex_stalks = directed_sheaf.complex_stalks
         directed_restrictions = directed_sheaf.directed_restrictions
         directional_encoding = directed_sheaf.directional_encoding
         poset = directed_sheaf.poset
         
-        # Build Hermitian blocks
-        hermitian_blocks = self._build_hermitian_blocks(
-            complex_stalks, 
-            directed_restrictions, 
-            directional_encoding, 
-            poset
-        )
-        
-        # Assemble full Laplacian
-        complex_laplacian = self._assemble_complex_laplacian(hermitian_blocks, complex_stalks)
+        # Use double precision for better numerical stability when eigenvalue preservation is enabled
+        if self._uses_eigenvalue_preservation(directed_sheaf):
+            logger.debug("Using double precision for standard Laplacian with eigenvalue-aware restrictions")
+            
+            # Convert to double precision
+            complex_stalks_double = {k: v.to(torch.complex128) for k, v in complex_stalks.items()}
+            directed_restrictions_double = {k: v.to(torch.complex128) for k, v in directed_restrictions.items()}
+            directional_encoding_double = directional_encoding.to(torch.complex128)
+            
+            # Build Hermitian blocks in double precision
+            hermitian_blocks_double = self._build_hermitian_blocks(
+                complex_stalks_double,
+                directed_restrictions_double,
+                directional_encoding_double,
+                poset
+            )
+            
+            # Assemble full Laplacian in double precision
+            complex_laplacian_double = self._assemble_complex_laplacian(hermitian_blocks_double, complex_stalks_double)
+            
+            # Convert back to original precision and ensure Hermitian property with conditioning
+            complex_laplacian = complex_laplacian_double.to(next(iter(complex_stalks.values())).dtype)
+            
+            # Ensure Hermitian property and improve conditioning
+            complex_laplacian = 0.5 * (complex_laplacian + complex_laplacian.conj().T)
+            
+            # Add small regularization to diagonal for better conditioning
+            regularization = 1e-10 * torch.eye(complex_laplacian.shape[0], 
+                                              device=complex_laplacian.device, 
+                                              dtype=complex_laplacian.dtype)
+            complex_laplacian = complex_laplacian + regularization
+        else:
+            # Standard precision for non-eigenvalue preservation mode
+            hermitian_blocks = self._build_hermitian_blocks(
+                complex_stalks, 
+                directed_restrictions, 
+                directional_encoding, 
+                poset
+            )
+            
+            # Assemble full Laplacian
+            complex_laplacian = self._assemble_complex_laplacian(hermitian_blocks, complex_stalks)
         
         # Validate Hermitian properties
         if self.validate_properties:
@@ -183,8 +232,17 @@ class DirectedSheafLaplacianBuilder:
         
         # Convert to real representation
         if self.use_sparse_operations:
-            # Convert to sparse for efficiency
-            complex_sparse = csr_matrix(complex_laplacian.detach().cpu().numpy())
+            # Convert to sparse with careful precision handling
+            # Ensure we preserve the precision of complex_laplacian
+            complex_numpy = complex_laplacian.detach().cpu().numpy()
+            
+            # Use appropriate dtype to preserve precision
+            if complex_laplacian.dtype == torch.complex128:
+                complex_numpy = complex_numpy.astype(np.complex128)
+            else:
+                complex_numpy = complex_numpy.astype(np.complex64)
+                
+            complex_sparse = csr_matrix(complex_numpy)
             real_sparse = self.complex_to_real.embed_sparse_matrix(complex_sparse)
             
             logger.info(f"Built real embedded Laplacian (sparse): {real_sparse.shape}")
@@ -206,11 +264,21 @@ class DirectedSheafLaplacianBuilder:
         Returns:
             Tuple of (real_laplacian, metadata)
         """
-        # Build complex Laplacian first
-        complex_laplacian = self.build_complex_laplacian(directed_sheaf)
+        # Check if eigenvalue preservation is required
+        if self._uses_eigenvalue_preservation(directed_sheaf):
+            # Build complex Laplacian with eigenvalue preservation
+            complex_laplacian = self._build_hermitian_laplacian_with_eigenvalues(directed_sheaf)
+        else:
+            # Build standard complex Laplacian
+            complex_laplacian = self.build_complex_laplacian(directed_sheaf)
         
         # Convert to real representation
-        real_laplacian = self.build_real_embedded_laplacian(directed_sheaf)
+        if self.use_sparse_operations:
+            complex_sparse = csr_matrix(complex_laplacian.detach().cpu().numpy())
+            real_laplacian = self.complex_to_real.embed_sparse_matrix(complex_sparse)
+        else:
+            real_laplacian_dense = self.complex_to_real.embed_matrix(complex_laplacian)
+            real_laplacian = csr_matrix(real_laplacian_dense.detach().cpu().numpy())
         
         # Compute metadata
         metadata = self._compute_laplacian_metadata(
@@ -220,6 +288,195 @@ class DirectedSheafLaplacianBuilder:
         )
         
         return real_laplacian, metadata
+    
+    def _uses_eigenvalue_preservation(self, directed_sheaf: DirectedSheaf) -> bool:
+        """Check if directed sheaf uses eigenvalue preservation.
+        
+        Args:
+            directed_sheaf: DirectedSheaf to check
+            
+        Returns:
+            True if eigenvalue preservation is enabled
+        """
+        # Check base sheaf for eigenvalue metadata
+        if (directed_sheaf.base_sheaf and 
+            hasattr(directed_sheaf.base_sheaf, 'eigenvalue_metadata') and 
+            directed_sheaf.base_sheaf.eigenvalue_metadata is not None):
+            return directed_sheaf.base_sheaf.eigenvalue_metadata.preserve_eigenvalues
+        
+        # Check directed sheaf metadata directly
+        return directed_sheaf.metadata.get('preserve_eigenvalues', False)
+    
+    def _build_hermitian_laplacian_with_eigenvalues(self, directed_sheaf: DirectedSheaf) -> torch.Tensor:
+        """Build Hermitian Laplacian with eigenvalue preservation using CORRECTED formulation.
+        
+        Implements the corrected Hermitian formulation based on the energy functional:
+        ||δx||² = (x_v - R_e x_u)^H Σ_v (x_v - R_e x_u)
+        
+        CORRECTED Mathematical formulation (eliminates negative eigenvalues):
+        - Off-diagonal: L[u,v] = -R_e^H Σ_v, L[v,u] = -Σ_v R_e
+        - Diagonal: L[n,n] = Σ_{outgoing} (R_e^H Σ_target R_e) + Σ_{incoming} Σ_n
+        
+        Key changes from previous (incorrect) formulation:
+        - REMOVED: Σᵤ⁻¹ terms that violated positive semi-definiteness
+        - CORRECTED: Direct application of energy functional expansion
+        - ENSURED: Proper accumulation of edge contributions to diagonal blocks
+        
+        This guarantees L = L^H and L ⪰ 0 by construction.
+        
+        Args:
+            directed_sheaf: DirectedSheaf with eigenvalue preservation
+            
+        Returns:
+            Complex Hermitian Laplacian tensor with eigenvalue preservation
+            
+        Raises:
+            ValueError: If eigenvalue preservation is not properly configured
+            RuntimeError: If construction fails
+        """
+        logger.info("Building Hermitian Laplacian with eigenvalue preservation")
+        
+        # Validate eigenvalue preservation setup
+        if not self._uses_eigenvalue_preservation(directed_sheaf):
+            raise ValueError("DirectedSheaf does not have eigenvalue preservation enabled")
+        
+        # Extract base sheaf eigenvalue metadata
+        base_sheaf = directed_sheaf.base_sheaf
+        if not base_sheaf or not base_sheaf.eigenvalue_metadata:
+            raise ValueError("Base sheaf eigenvalue metadata required for eigenvalue preservation")
+        
+        eigenvalue_metadata = base_sheaf.eigenvalue_metadata
+        eigenvalue_matrices = eigenvalue_metadata.eigenvalue_matrices
+        
+        # Get sheaf components
+        complex_stalks = directed_sheaf.complex_stalks
+        directed_restrictions = directed_sheaf.directed_restrictions
+        directional_encoding = directed_sheaf.directional_encoding
+        poset = directed_sheaf.poset
+        
+        # Build Hermitian blocks with eigenvalue preservation using double precision
+        logger.debug("Using double precision for eigenvalue preservation Laplacian construction")
+        
+        # Convert inputs to double precision complex for better numerical stability
+        complex_stalks_double = {k: v.to(torch.complex128) for k, v in complex_stalks.items()}
+        directed_restrictions_double = {k: v.to(torch.complex128) for k, v in directed_restrictions.items()}
+        directional_encoding_double = directional_encoding.to(torch.complex128)
+        eigenvalue_matrices_double = {k: v.to(torch.complex128) for k, v in eigenvalue_matrices.items()}
+        
+        hermitian_blocks_double = self._build_hermitian_blocks_with_eigenvalues(
+            complex_stalks_double,
+            directed_restrictions_double,
+            directional_encoding_double,
+            poset,
+            eigenvalue_matrices_double
+        )
+        
+        # Assemble full Laplacian in double precision
+        complex_laplacian_double = self._assemble_complex_laplacian(hermitian_blocks_double, complex_stalks_double)
+        
+        # Convert back to original precision and ensure Hermitian property is preserved
+        complex_laplacian = complex_laplacian_double.to(next(iter(complex_stalks.values())).dtype)
+        
+        # Explicitly enforce Hermitian property after precision conversion to prevent numerical drift
+        complex_laplacian = 0.5 * (complex_laplacian + complex_laplacian.conj().T)
+        
+        # Validate Hermitian properties with eigenvalue preservation
+        if self.validate_properties:
+            self._validate_hermitian_properties(complex_laplacian)
+        
+        logger.info(f"Built Hermitian Laplacian with eigenvalue preservation: {complex_laplacian.shape}")
+        return complex_laplacian
+    
+    def _build_hermitian_blocks_with_eigenvalues(self, 
+                                               complex_stalks: Dict[str, torch.Tensor],
+                                               directed_restrictions: Dict[Tuple[str, str], torch.Tensor],
+                                               directional_encoding: torch.Tensor,
+                                               poset: nx.DiGraph,
+                                               eigenvalue_matrices: Dict[str, torch.Tensor]) -> Dict[Tuple[str, str], torch.Tensor]:
+        """Build Hermitian blocks with eigenvalue preservation using correct mathematical formulation.
+        
+        Implements the corrected Hermitian formulation based on the energy functional:
+        ||δx||² = (x_v - R_e x_u)^H Σ_v (x_v - R_e x_u)
+        
+        This ensures positive semi-definiteness by construction.
+        
+        Correct formulation:
+        - Off-diagonal: L[u,v] = -R_e^H Σ_v, L[v,u] = -Σ_v R_e  
+        - Diagonal: L[n,n] = Σ_{outgoing} (R_e^H Σ_target R_e) + Σ_{incoming} Σ_n
+        
+        Args:
+            complex_stalks: Dictionary of complex stalks
+            directed_restrictions: Dictionary of directed restriction maps
+            directional_encoding: Directional encoding matrix T^{(q)}
+            poset: Directed graph structure
+            eigenvalue_matrices: Eigenvalue diagonal matrices from base sheaf
+            
+        Returns:
+            Dictionary mapping (node1, node2) to Hermitian blocks with eigenvalue preservation
+        """
+        hermitian_blocks = {}
+        vertices = list(poset.nodes())
+        
+        # Create node to index mapping
+        node_to_idx = {node: i for i, node in enumerate(vertices)}
+        
+        # Initialize diagonal blocks to zero (will accumulate contributions)
+        for v in vertices:
+            if v in complex_stalks and v in eigenvalue_matrices:
+                # Initialize with zeros - will accumulate edge contributions
+                stalk_dim = complex_stalks[v].shape[-1]
+                hermitian_blocks[(v, v)] = torch.zeros(
+                    stalk_dim, stalk_dim, dtype=torch.complex64, device=self.device
+                )
+                logger.debug(f"Initialized diagonal block for {v}: {hermitian_blocks[(v, v)].shape}")
+        
+        # Build blocks from directed restrictions using correct formulation
+        for (u, v), restriction in directed_restrictions.items():
+            if u not in complex_stalks or v not in complex_stalks:
+                continue
+            if u not in eigenvalue_matrices or v not in eigenvalue_matrices:
+                logger.warning(f"Missing eigenvalue matrices for edge ({u}, {v}), skipping eigenvalue preservation")
+                continue
+                
+            # Get eigenvalue matrices (real from base sheaf)
+            Sigma_u_real = eigenvalue_matrices[u]
+            Sigma_v_real = eigenvalue_matrices[v]  # Edge stalk identified with target: Σₑ = Σᵥ
+            
+            # Convert to complex for directed computations
+            if Sigma_u_real.is_complex():
+                Sigma_u = Sigma_u_real
+            else:
+                Sigma_u = torch.complex(Sigma_u_real, torch.zeros_like(Sigma_u_real))
+                
+            if Sigma_v_real.is_complex():
+                Sigma_v = Sigma_v_real
+            else:
+                Sigma_v = torch.complex(Sigma_v_real, torch.zeros_like(Sigma_v_real))
+            
+            # Extract restriction map R_e (already includes directional encoding)
+            R_e = restriction  # Complex restriction map with directional encoding
+            
+            # Build off-diagonal blocks using CORRECT formulation
+            # Based on energy functional: ||δx||² = (x_v - R_e x_u)^H Σ_v (x_v - R_e x_u)
+            # L[u,v] = -R_e^H Σ_v
+            hermitian_blocks[(u, v)] = -R_e.conj().T @ Sigma_v
+            
+            # L[v,u] = -Σ_v R_e (Hermitian conjugate relationship)
+            hermitian_blocks[(v, u)] = -Sigma_v @ R_e
+            
+            # Update diagonal blocks with proper edge contributions
+            # For source vertex u (outgoing edge): L[u,u] += R_e^H Σ_v R_e
+            if (u, u) in hermitian_blocks:
+                hermitian_blocks[(u, u)] += R_e.conj().T @ Sigma_v @ R_e
+            
+            # For target vertex v (incoming edge): L[v,v] += Σ_v
+            if (v, v) in hermitian_blocks:
+                hermitian_blocks[(v, v)] += Sigma_v
+            
+            logger.debug(f"Built corrected Hermitian blocks for edge ({u}, {v})")
+        
+        logger.info(f"Built {len(hermitian_blocks)} Hermitian blocks with corrected eigenvalue preservation")
+        return hermitian_blocks
     
     def _build_hermitian_blocks(self, 
                                complex_stalks: Dict[str, torch.Tensor],
@@ -363,8 +620,9 @@ class DirectedSheafLaplacianBuilder:
         Raises:
             RuntimeError: If validation fails
         """
-        # Check Hermitian property: L^* = L
-        hermitian_error = torch.abs(laplacian - laplacian.conj().T).max().item()
+        # Check Hermitian property: L^* = L 
+        hermitian_diff = laplacian - laplacian.conj().T
+        hermitian_error = torch.abs(hermitian_diff).max().item()
         if hermitian_error > self.hermitian_tolerance:
             raise RuntimeError(f"Laplacian not Hermitian: error={hermitian_error}")
         

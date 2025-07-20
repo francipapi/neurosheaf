@@ -384,7 +384,7 @@ rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
 
 # Try to load MLP model first (simpler architecture)
 try:
-    mlp_model = load_model(ActualCustomModel, custom_path, device="cpu")
+    mlp_model = load_model(ActualCustomModel, rand_custom_path, device="cpu")
     print(f"✅ Successfully loaded MLP model with {sum(p.numel() for p in mlp_model.parameters()):,} parameters")
 except Exception as e:
     print(f"❌ Error loading MLP model: {e}")
@@ -425,7 +425,8 @@ analysis = analyzer.analyze(
     data, 
     directed=True, 
     directionality_parameter=directionality_parameter,
-    use_gram_regularization=True,  # Enable Tikhonov regularization
+    use_gram_regularization= True,  # Disable Tikhonov regularization to match legacy behavior
+    preserve_eigenvalues= True,
     regularization_config=regularization_config
 )
 

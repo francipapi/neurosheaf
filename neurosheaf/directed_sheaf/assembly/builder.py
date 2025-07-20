@@ -112,7 +112,9 @@ class DirectedSheafBuilder:
         
         This is the main entry point for converting existing real sheaves
         to directed sheaves. The conversion preserves all mathematical
-        properties while adding directional information.
+        properties while adding directional information. If the base sheaf
+        has eigenvalue preservation enabled, this information is propagated
+        to the directed sheaf for proper Hermitian Laplacian construction.
         
         Args:
             base_sheaf: Real sheaf from existing pipeline
@@ -132,6 +134,16 @@ class DirectedSheafBuilder:
         
         if not base_sheaf.stalks or not base_sheaf.restrictions:
             raise ValueError("Base sheaf must have non-empty stalks and restrictions")
+        
+        # Check for eigenvalue preservation in base sheaf
+        has_eigenvalue_preservation = (
+            hasattr(base_sheaf, 'eigenvalue_metadata') and 
+            base_sheaf.eigenvalue_metadata is not None and
+            base_sheaf.eigenvalue_metadata.preserve_eigenvalues
+        )
+        
+        if has_eigenvalue_preservation:
+            logger.info("Base sheaf has eigenvalue preservation enabled - propagating to directed sheaf")
         
         # Validate base sheaf if requested
         if self.validate_construction:
@@ -172,7 +184,8 @@ class DirectedSheafBuilder:
                     base_sheaf, 
                     complex_stalks, 
                     directed_restrictions,
-                    time.time() - start_time
+                    time.time() - start_time,
+                    has_eigenvalue_preservation
                 )
             )
             
@@ -199,17 +212,22 @@ class DirectedSheafBuilder:
                              model: nn.Module, 
                              input_tensor: torch.Tensor,
                              validate: bool = True,
+                             preserve_eigenvalues: Optional[bool] = None,
                              use_gram_regularization: bool = False,
                              regularization_config: Optional[Dict[str, Any]] = None) -> DirectedSheaf:
         """Build directed sheaf directly from a model and input tensor.
         
         This method mirrors the original SheafBuilder.build_from_activations
         but produces a DirectedSheaf with complex stalks and Hermitian Laplacians.
+        When eigenvalue preservation is enabled, the resulting directed sheaf
+        will use the Hermitian formulation with eigenvalue matrices.
         
         Args:
             model: The PyTorch model to analyze
             input_tensor: An example input tensor to run the forward pass
             validate: Whether to validate the final sheaf's properties
+            preserve_eigenvalues: Optional override for eigenvalue preservation in base sheaf.
+                If None, uses SheafBuilder default. If True/False, passed to base SheafBuilder.
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization (if None, uses defaults)
             
@@ -226,15 +244,23 @@ class DirectedSheafBuilder:
             # Step 1: Build base real sheaf using existing pipeline
             logger.info("Step 1: Building base real sheaf")
             from ...sheaf.assembly.builder import SheafBuilder
-            base_builder = SheafBuilder()
             
+            # Create base builder with proper eigenvalue preservation setting
+            # Use the provided parameter or default to False
+            eigenvalue_setting = preserve_eigenvalues if preserve_eigenvalues is not None else False
+            base_builder = SheafBuilder(preserve_eigenvalues=eigenvalue_setting)
+            logger.info(f"Created base SheafBuilder with preserve_eigenvalues={eigenvalue_setting}")
+            
+            # Build base sheaf - now the builder is already configured correctly
             base_sheaf = base_builder.build_from_activations(
                 model=model,
                 input_tensor=input_tensor,
                 validate=validate,
+                preserve_eigenvalues=preserve_eigenvalues,  # Still pass as runtime override for consistency
                 use_gram_regularization=use_gram_regularization,
                 regularization_config=regularization_config
             )
+            logger.info(f"Built base sheaf with eigenvalue preservation: {eigenvalue_setting}")
             
             # Step 2: Convert base sheaf to directed sheaf
             logger.info("Step 2: Converting base sheaf to directed sheaf")
@@ -248,7 +274,10 @@ class DirectedSheafBuilder:
                 'base_construction_method': base_sheaf.metadata.get('construction_method', 'unknown'),
                 'batch_size': input_tensor.shape[0],
                 'gram_regularized': use_gram_regularization,
-                'regularization_info': base_sheaf.metadata.get('regularization_info', None)
+                'regularization_info': base_sheaf.metadata.get('regularization_info', None),
+                'preserve_eigenvalues_override': preserve_eigenvalues,
+                'preserve_eigenvalues_used': eigenvalue_setting,
+                'base_preserve_eigenvalues': base_sheaf.metadata.get('preserve_eigenvalues', False)
             })
             
             logger.info("Directed sheaf construction from activations complete")
@@ -358,7 +387,8 @@ class DirectedSheafBuilder:
                         base_sheaf: Sheaf,
                         complex_stalks: Dict[str, torch.Tensor],
                         directed_restrictions: Dict[Tuple[str, str], torch.Tensor],
-                        construction_time: float) -> Dict[str, Any]:
+                        construction_time: float,
+                        has_eigenvalue_preservation: bool = False) -> Dict[str, Any]:
         """Create metadata for directed sheaf construction.
         
         Args:
@@ -366,6 +396,7 @@ class DirectedSheafBuilder:
             complex_stalks: Complex stalks dictionary
             directed_restrictions: Directed restrictions dictionary
             construction_time: Time taken for construction
+            has_eigenvalue_preservation: Whether eigenvalue preservation is enabled
             
         Returns:
             Metadata dictionary
@@ -386,7 +417,9 @@ class DirectedSheafBuilder:
             'restrictions_computed': True,
             'construction_time': construction_time,
             'device': str(self.device),
-            'base_sheaf_metadata': base_sheaf.metadata.copy()
+            'base_sheaf_metadata': base_sheaf.metadata.copy(),
+            'preserve_eigenvalues': has_eigenvalue_preservation,
+            'eigenvalue_hermitian_formulation': has_eigenvalue_preservation
         }
         
         return metadata
@@ -449,6 +482,7 @@ class DirectedSheafBuilder:
                 validation_results['hermitian_laplacian_valid'] and
                 validation_results['real_embedding_valid']
             )
+            
             
         except Exception as e:
             validation_results['validation_errors'].append(f"Validation failed: {e}")

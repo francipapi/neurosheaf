@@ -42,12 +42,14 @@ class Sheaf:
                      enabling the general sheaf Laplacian formulation.
         metadata: Additional information about construction and validation
         whitening_maps: Dictionary mapping node names to whitening transformations
+        eigenvalue_metadata: Optional metadata for eigenvalue-preserving operations
     """
     poset: nx.DiGraph = field(default_factory=nx.DiGraph)
     stalks: Dict[str, torch.Tensor] = field(default_factory=dict)
     restrictions: Dict[Tuple[str, str], torch.Tensor] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     whitening_maps: Dict[str, torch.Tensor] = field(default_factory=dict)
+    eigenvalue_metadata: Optional['EigenvalueMetadata'] = None
     
     def __post_init__(self):
         """Initialize metadata if not provided."""
@@ -142,16 +144,66 @@ class WhiteningInfo:
         condition_number: Condition number of original matrix
         rank: Effective rank of the matrix
         explained_variance: Proportion of variance retained
+        eigenvalue_diagonal: Diagonal eigenvalue matrix (if preserve_eigenvalues=True)
+        preserve_eigenvalues: Whether eigenvalue preservation mode is active
     """
     whitening_matrix: torch.Tensor
     eigenvalues: torch.Tensor
     condition_number: float
     rank: int
     explained_variance: float = 1.0
+    eigenvalue_diagonal: Optional[torch.Tensor] = None
+    preserve_eigenvalues: bool = False
     
     def summary(self) -> str:
         """Get whitening summary."""
+        eigenvalue_status = "ENABLED" if self.preserve_eigenvalues else "DISABLED"
         return (f"Whitening Info:\n"
                 f"  Rank: {self.rank}\n" 
                 f"  Condition Number: {self.condition_number:.2e}\n"
-                f"  Explained Variance: {self.explained_variance:.3f}")
+                f"  Explained Variance: {self.explained_variance:.3f}\n"
+                f"  Eigenvalue Preservation: {eigenvalue_status}")
+
+
+@dataclass
+class EigenvalueMetadata:
+    """Metadata for eigenvalue-preserving operations.
+    
+    This dataclass tracks information specific to eigenvalue-preserving whitening
+    mode, including eigenvalue matrices for each stalk and regularization details.
+    
+    Attributes:
+        eigenvalue_matrices: Dictionary mapping node names to their eigenvalue diagonal matrices
+        condition_numbers: Condition numbers for each eigenvalue matrix
+        regularization_applied: Whether regularization was applied to each matrix
+        preserve_eigenvalues: Whether eigenvalue preservation mode is active
+        hodge_formulation_active: Whether Hodge formulation is being used
+    """
+    eigenvalue_matrices: Dict[str, torch.Tensor] = field(default_factory=dict)
+    condition_numbers: Dict[str, float] = field(default_factory=dict)
+    regularization_applied: Dict[str, bool] = field(default_factory=dict)
+    preserve_eigenvalues: bool = False
+    hodge_formulation_active: bool = False
+    
+    def summary(self) -> str:
+        """Get eigenvalue metadata summary."""
+        mode_status = "ACTIVE" if self.preserve_eigenvalues else "INACTIVE"
+        hodge_status = "ACTIVE" if self.hodge_formulation_active else "INACTIVE"
+        num_stalks = len(self.eigenvalue_matrices)
+        
+        return (f"Eigenvalue Metadata:\n"
+                f"  Preservation Mode: {mode_status}\n"
+                f"  Hodge Formulation: {hodge_status}\n"
+                f"  Number of Stalks: {num_stalks}")
+    
+    def get_regularization_summary(self) -> Dict[str, Any]:
+        """Get summary of regularization applied."""
+        total_stalks = len(self.eigenvalue_matrices)
+        regularized_stalks = sum(self.regularization_applied.values())
+        
+        return {
+            'total_stalks': total_stalks,
+            'regularized_stalks': regularized_stalks,
+            'regularization_fraction': regularized_stalks / total_stalks if total_stalks > 0 else 0.0,
+            'condition_numbers': dict(self.condition_numbers)
+        }

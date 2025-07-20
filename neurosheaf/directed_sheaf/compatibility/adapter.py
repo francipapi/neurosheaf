@@ -287,7 +287,9 @@ class DirectedSheafAdapter:
         """Create a compatibility Sheaf object from DirectedSheaf.
         
         Creates a standard Sheaf object that can be used with existing
-        pipeline components that expect real sheaves.
+        pipeline components that expect real sheaves. Properly propagates
+        eigenvalue preservation information from the base sheaf to ensure
+        correct spectral analysis behavior.
         
         Args:
             directed_sheaf: DirectedSheaf to convert
@@ -298,12 +300,44 @@ class DirectedSheafAdapter:
         logger.info("Creating compatibility sheaf from directed sheaf")
         
         try:
-            # Convert complex stalks to real representation
+            # Check for eigenvalue preservation in the base sheaf
+            has_eigenvalue_preservation = False
+            eigenvalue_metadata = None
+            base_sheaf_stalks = None
+            
+            if (directed_sheaf.base_sheaf and 
+                hasattr(directed_sheaf.base_sheaf, 'eigenvalue_metadata') and 
+                directed_sheaf.base_sheaf.eigenvalue_metadata is not None):
+                eigenvalue_metadata = directed_sheaf.base_sheaf.eigenvalue_metadata
+                has_eigenvalue_preservation = eigenvalue_metadata.preserve_eigenvalues
+                base_sheaf_stalks = directed_sheaf.base_sheaf.stalks
+                logger.info(f"Base sheaf eigenvalue preservation detected: {has_eigenvalue_preservation}")
+            
+            # Convert complex stalks to real representation  
+            # The key insight is that for eigenvalue preservation mode, we need dimensional consistency
+            # between stalks, restrictions, and eigenvalue matrices
             real_stalks = {}
             for node_id, complex_stalk in directed_sheaf.complex_stalks.items():
-                # For identity stalks, we can use the real dimension
                 real_dim = complex_stalk.shape[0]
-                real_stalks[node_id] = torch.eye(real_dim * 2, dtype=torch.float32)
+                
+                if has_eigenvalue_preservation and eigenvalue_metadata and node_id in eigenvalue_metadata.eigenvalue_matrices:
+                    # For eigenvalue preservation, we need stalks that match the eigenvalue matrix dimensions
+                    # The eigenvalue matrix has rank dimensions, but our complex stalk has complex dimensions
+                    # We need to ensure the real stalk has dimensions compatible with the real-embedded restrictions
+                    eigenvalue_matrix = eigenvalue_metadata.eigenvalue_matrices[node_id]
+                    eigenvalue_rank = eigenvalue_matrix.shape[0]
+                    
+                    # The real stalk should have dimensions that match what the restrictions expect
+                    # Since restrictions come from real-embedding of complex restrictions,
+                    # and complex restrictions are (target_rank, source_rank),
+                    # the real restrictions are (2*target_rank, 2*source_rank)
+                    # So the real stalk should be (2*eigenvalue_rank, 2*eigenvalue_rank)
+                    real_stalks[node_id] = torch.eye(2 * eigenvalue_rank, dtype=torch.float32)
+                    logger.debug(f"Node {node_id}: Eigenvalue-preserving stalk (2*{eigenvalue_rank}, 2*{eigenvalue_rank}) to match rank")
+                else:
+                    # For standard whitened mode, use identity based on complex stalk dimension
+                    real_stalks[node_id] = torch.eye(real_dim * 2, dtype=torch.float32)
+                    logger.debug(f"Node {node_id}: Standard identity stalk (2*{real_dim}, 2*{real_dim})")
             
             # Convert directed restrictions to real representation
             real_restrictions = {}
@@ -312,15 +346,16 @@ class DirectedSheafAdapter:
                 real_restriction = self.complex_to_real.embed_matrix(complex_restriction)
                 real_restrictions[edge] = real_restriction
             
-            # Create compatibility metadata
+            # Create compatibility metadata with proper eigenvalue preservation information
             compatibility_metadata = {
                 'construction_method': 'directed_sheaf_compatibility',
                 'original_directed': True,
                 'directionality_parameter': directed_sheaf.directionality_parameter,
                 'real_embedding': True,
-                'whitened': True,  # Maintain whitened flag for compatibility
+                'whitened': not has_eigenvalue_preservation,  # Only whitened if NOT eigenvalue preserving
                 'nodes': len(directed_sheaf.complex_stalks),
-                'edges': len(directed_sheaf.directed_restrictions)
+                'edges': len(directed_sheaf.directed_restrictions),
+                'eigenvalue_preservation_detected': has_eigenvalue_preservation
             }
             
             # Preserve original metadata if requested
@@ -339,7 +374,37 @@ class DirectedSheafAdapter:
                 metadata=compatibility_metadata
             )
             
-            logger.info("Compatibility sheaf created successfully")
+            # CRITICAL: Propagate eigenvalue metadata from base sheaf to compatibility sheaf
+            # For eigenvalue preservation mode, we need to adapt the eigenvalue matrices to real embedding
+            if has_eigenvalue_preservation and eigenvalue_metadata:
+                # Create a new eigenvalue metadata with real-embedded eigenvalue matrices
+                from ...sheaf.data_structures import EigenvalueMetadata
+                
+                real_eigenvalue_metadata = EigenvalueMetadata(
+                    preserve_eigenvalues=eigenvalue_metadata.preserve_eigenvalues,
+                    hodge_formulation_active=eigenvalue_metadata.hodge_formulation_active
+                )
+                
+                # Convert eigenvalue matrices to real representation 
+                # Each eigenvalue matrix Σ becomes [[Σ, 0], [0, Σ]] to match the real embedding structure
+                for node_id, eigenvalue_matrix in eigenvalue_metadata.eigenvalue_matrices.items():
+                    # Real-embed the eigenvalue matrix: block diagonal with the same matrix twice
+                    real_eigenvalue_matrix = torch.block_diag(eigenvalue_matrix, eigenvalue_matrix).to(torch.float32)
+                    real_eigenvalue_metadata.eigenvalue_matrices[node_id] = real_eigenvalue_matrix
+                    
+                    # Copy other metadata
+                    if node_id in eigenvalue_metadata.condition_numbers:
+                        real_eigenvalue_metadata.condition_numbers[node_id] = eigenvalue_metadata.condition_numbers[node_id]
+                    if node_id in eigenvalue_metadata.regularization_applied:
+                        real_eigenvalue_metadata.regularization_applied[node_id] = eigenvalue_metadata.regularization_applied[node_id]
+                
+                compatibility_sheaf.eigenvalue_metadata = real_eigenvalue_metadata
+                logger.info("Eigenvalue metadata successfully propagated and real-embedded to compatibility sheaf")
+            else:
+                compatibility_sheaf.eigenvalue_metadata = None
+                logger.info("No eigenvalue metadata to propagate - using standard whitened mode")
+            
+            logger.info(f"Compatibility sheaf created successfully (eigenvalue_preserving={has_eigenvalue_preservation})")
             return compatibility_sheaf
             
         except Exception as e:

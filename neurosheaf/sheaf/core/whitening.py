@@ -11,7 +11,7 @@ The whitening approach is the mathematical foundation that allows
 sheaf construction to achieve exact rather than approximate properties.
 """
 
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
 import torch
@@ -34,17 +34,26 @@ class WhiteningProcessor:
     """
     
     def __init__(self, min_eigenvalue: float = 1e-8, regularization: float = 1e-10, 
-                 use_double_precision: bool = False):
+                 use_double_precision: bool = False, preserve_eigenvalues: bool = False,
+                 use_matrix_rank: bool = True):
         """Initialize whitening processor.
         
         Args:
             min_eigenvalue: Minimum eigenvalue threshold for numerical stability
             regularization: Small value added to eigenvalues for regularization
             use_double_precision: Whether to use double precision for numerical computations
+            preserve_eigenvalues: Whether to preserve eigenvalues in diagonal form instead of identity
+            use_matrix_rank: Whether to use torch.linalg.matrix_rank for rank computation (legacy behavior)
         """
         self.min_eigenvalue = min_eigenvalue
         self.regularization = regularization
+        # Disable double precision on MPS devices (Apple Silicon) as they don't support float64
+        if use_double_precision and torch.backends.mps.is_available():
+            logger.warning("Disabling double precision on MPS device (Apple Silicon) - float64 not supported")
+            use_double_precision = False
         self.use_double_precision = use_double_precision
+        self.preserve_eigenvalues = preserve_eigenvalues
+        self.use_matrix_rank = use_matrix_rank
     
     @classmethod
     def create_adaptive(cls, batch_size: int, min_eigenvalue: float = 1e-8, 
@@ -105,15 +114,32 @@ class WhiteningProcessor:
         eigenvals = eigenvals[idx]
         eigenvecs = eigenvecs[:, idx]
         
-        # Filter positive eigenvalues for numerical stability
-        pos_mask = eigenvals > self.min_eigenvalue
-        effective_rank = np.sum(pos_mask)
+        # Determine effective rank based on configuration
+        if self.use_matrix_rank:
+            # Use torch.linalg.matrix_rank for legacy behavior
+            # First convert to torch tensor if needed
+            if isinstance(K, torch.Tensor):
+                K_torch = K
+            else:
+                K_torch = torch.from_numpy(K_np)
+                if hasattr(K, 'device'):
+                    K_torch = K_torch.to(K.device)
+            
+            # Use float32 for matrix rank computation to match legacy behavior
+            effective_rank = torch.linalg.matrix_rank(K_torch.float()).item()
+            
+            # Select top eigenvalues based on matrix rank
+            pos_mask = np.arange(len(eigenvals)) < effective_rank
+        else:
+            # Original behavior: filter by minimum eigenvalue threshold
+            pos_mask = eigenvals > self.min_eigenvalue
+            effective_rank = np.sum(pos_mask)
         
         if effective_rank == 0:
             logger.warning("Matrix has no significant positive eigenvalues, using regularized identity")
-            # Fallback to regularized identity with appropriate precision
+            # Fallback to regularized identity with appropriate precision and device
             dtype = torch.float64 if self.use_double_precision else torch.float32
-            W = torch.eye(n, dtype=dtype) * (1.0 / np.sqrt(self.regularization))
+            W = torch.eye(n, dtype=dtype, device=K.device) * (1.0 / np.sqrt(self.regularization))
             # Convert back to original precision if needed
             if not self.use_double_precision:
                 W = W.float()
@@ -138,11 +164,14 @@ class WhiteningProcessor:
         inv_sqrt_eigenvals = 1.0 / np.sqrt(regularized_eigenvals)
         W_np = np.diag(inv_sqrt_eigenvals) @ pos_eigenvecs.T
         
-        # Convert to torch with appropriate precision
+        # Convert to torch with appropriate precision and device
         if self.use_double_precision:
             W = torch.from_numpy(W_np.astype(np.float64)).double()
         else:
             W = torch.from_numpy(W_np).float()
+        
+        # Move to same device as input tensor K
+        W = W.to(K.device)
         
         # Compute metadata
         condition_number = np.max(regularized_eigenvals) / np.min(regularized_eigenvals)
@@ -163,34 +192,40 @@ class WhiteningProcessor:
         return W, info
     
     def whiten_gram_matrix(self, K: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
-        """Transform Gram matrix to whitened coordinates with identity inner product.
+        """Transform Gram matrix to whitened coordinates with configurable inner product.
         
         Args:
             K: Original Gram matrix (n x n)
             
         Returns:
             Tuple of (K_whitened, W, info):
-            - K_whitened: Identity matrix in whitened space (r x r)
+            - K_whitened: Identity matrix (default) or eigenvalue diagonal matrix (if preserve_eigenvalues=True)
             - W: Whitening map (r x n)
             - info: Whitening metadata
         """
         W, info = self.compute_whitening_map(K)
         r = W.shape[0]
-        
-        # In whitened coordinates, the inner product is exactly the identity
-        # Use appropriate precision for identity matrix
         dtype = W.dtype
-        K_whitened = torch.eye(r, dtype=dtype)
         
-        # Verify whitening quality: W K W^T should be close to identity
+        if self.preserve_eigenvalues:
+            # Return diagonal matrix of eigenvalues: K_whitened = diag(λ₁, λ₂, ..., λᵣ)
+            eigenvals = info['eigenvalues'][:r]  # Only positive eigenvalues
+            K_whitened = torch.diag(torch.from_numpy(eigenvals).to(dtype).to(K.device))
+        else:
+            # Current behavior: return identity matrix for standard whitening
+            K_whitened = torch.eye(r, dtype=dtype, device=K.device)
+        
+        # Verify whitening quality: W K W^T should match K_whitened
         # Ensure K has same precision as W for computation
         K_compute = K.to(dtype=dtype) if K.dtype != dtype else K
         WKWt = W @ K_compute @ W.T
-        identity_target = torch.eye(r, dtype=dtype)
-        whitening_error = torch.norm(WKWt - identity_target, p='fro').item()
+        whitening_error = torch.norm(WKWt - K_whitened, p='fro').item()
         
+        # Store metadata
         info['whitening_error'] = whitening_error
         info['whitened_dimension'] = r
+        info['preserve_eigenvalues'] = self.preserve_eigenvalues
+        info['eigenvalue_diagonal'] = K_whitened
         
         return K_whitened, W, info
     
@@ -270,3 +305,72 @@ class WhiteningProcessor:
             info['regularization_strategy'] = regularization_info.get('strategy', 'unknown')
         
         return K_whitened, W, info
+    
+    def compute_hodge_adjoint(self, R: torch.Tensor, 
+                             Sigma_source: torch.Tensor, 
+                             Sigma_target: torch.Tensor,
+                             regularization: Optional[float] = None) -> torch.Tensor:
+        """Compute Hodge adjoint R* = Σₛ⁻¹ R^T Σₜ for eigenvalue-preserving framework.
+        
+        This method implements the adjoint computation for non-identity inner products
+        as required by the Hodge Laplacian formulation when eigenvalues are preserved.
+        
+        Args:
+            R: Restriction map from source to target
+            Sigma_source: Source eigenvalue diagonal matrix
+            Sigma_target: Target eigenvalue diagonal matrix
+            regularization: Override regularization parameter
+            
+        Returns:
+            R*: Hodge adjoint of R with respect to eigenvalue-diagonal inner products
+        """
+        if not self.preserve_eigenvalues:
+            logger.warning("compute_hodge_adjoint called without preserve_eigenvalues=True")
+            # Fall back to standard transpose for identity inner products
+            return R.T
+        
+        eps = regularization if regularization is not None else self.regularization
+        
+        # Compute regularized inverse of source eigenvalue matrix
+        Sigma_source_inv = self._compute_regularized_inverse(Sigma_source, eps)
+        
+        # Hodge adjoint: R* = Σₛ⁻¹ R^T Σₜ
+        return Sigma_source_inv @ R.T @ Sigma_target
+    
+    def _compute_regularized_inverse(self, Sigma: torch.Tensor, 
+                                    regularization: Optional[float] = None) -> torch.Tensor:
+        """Compute regularized inverse of diagonal eigenvalue matrix.
+        
+        This method provides numerically stable inversion of eigenvalue diagonal matrices
+        by adding regularization to prevent division by very small eigenvalues.
+        
+        Args:
+            Sigma: Diagonal eigenvalue matrix
+            regularization: Regularization parameter (uses self.regularization if None)
+            
+        Returns:
+            Regularized inverse of Sigma: (Σ + εI)⁻¹
+        """
+        eps = regularization if regularization is not None else self.regularization
+        
+        # For diagonal matrices, we can compute the inverse directly
+        # This ensures exact symmetry for diagonal matrices
+        if torch.allclose(Sigma, torch.diag(torch.diag(Sigma)), atol=1e-10):
+            # Extract diagonal elements
+            diag_elements = torch.diag(Sigma)
+            # Add regularization and invert
+            diag_inv = 1.0 / (diag_elements + eps)
+            # Return as diagonal matrix
+            return torch.diag(diag_inv)
+        else:
+            # Fallback to general matrix inversion with symmetrization
+            Sigma_reg = Sigma + eps * torch.eye(
+                Sigma.shape[0], dtype=Sigma.dtype, device=Sigma.device
+            )
+            
+            # Compute inverse using solve for numerical stability
+            identity = torch.eye(Sigma.shape[0], dtype=Sigma.dtype, device=Sigma.device)
+            Sigma_inv = torch.linalg.solve(Sigma_reg, identity)
+            
+            # Ensure exact symmetry for numerical stability
+            return 0.5 * (Sigma_inv + Sigma_inv.T)

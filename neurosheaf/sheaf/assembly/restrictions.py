@@ -287,6 +287,200 @@ class RestrictionManager:
         except Exception as e:
             raise RestrictionError(f"Restriction computation failed: {e}")
     
+    def solve_weighted_procrustes(self, X: torch.Tensor, Y: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+        """
+        Solve weighted orthogonal Procrustes problem using matrix square root transformation.
+        
+        Problem: min ||Y - RX||²_W = tr((Y - RX)^T W (Y - RX))
+        Subject to: R^T R = I
+        
+        Solution approach:
+        1. Compute W^(1/2) using eigendecomposition
+        2. Transform: Ỹ = W^(1/2) Y  
+        3. Solve standard Procrustes: min ||Ỹ - RX||²_F
+        4. SVD solution: M = Ỹ X^T, R = U V^T from M = U Σ V^T
+        
+        Args:
+            X: Source matrix (d_source × n_samples)
+            Y: Target matrix (d_target × n_samples)  
+            W: Weight matrix (d_target × d_target), symmetric positive definite
+            
+        Returns:
+            R: Optimal semi-orthogonal transformation matrix (d_target × d_source)
+        """
+        try:
+            # 1. Compute matrix square root W^(1/2) using eigendecomposition
+            # Use double precision for numerical stability
+            W_double = W.double()
+            eigenvals, eigenvecs = torch.linalg.eigh(W_double)
+            
+            # Check for numerical issues
+            min_eigenval = eigenvals.min()
+            if min_eigenval <= 0:
+                logger.warning(f"Weight matrix has non-positive eigenvalue: {min_eigenval:.2e}. Adding regularization.")
+                eigenvals = eigenvals + 1e-10
+            
+            # Compute W^(1/2) = Q Λ^(1/2) Q^T
+            sqrt_eigenvals = torch.sqrt(eigenvals)
+            W_sqrt = eigenvecs @ torch.diag(sqrt_eigenvals) @ eigenvecs.T
+            
+            # Convert back to original precision
+            W_sqrt = W_sqrt.to(Y.dtype)
+            
+            # 2. Transform target matrix: Ỹ = W^(1/2) Y
+            Y_transformed = W_sqrt @ Y
+            
+            # 3. Compute cross-covariance matrix: M = Ỹ X^T
+            M = Y_transformed @ X.T
+            
+            # 4. SVD decomposition: M = U Σ V^T
+            U, S, Vh = torch.linalg.svd(M, full_matrices=False)
+            
+            # 5. Optimal solution: R = U V^T
+            R = U @ Vh
+            
+            logger.debug(f"Weighted Procrustes solved: R.shape={R.shape}, "
+                        f"min_eigenval={min_eigenval:.2e}, condition={eigenvals.max()/eigenvals.min():.2e}")
+            
+            return R
+            
+        except Exception as e:
+            raise RestrictionError(f"Weighted Procrustes computation failed: {e}")
+    
+    def compute_eigenvalue_aware_restriction(self, 
+                                           K_source: torch.Tensor,
+                                           K_target: torch.Tensor, 
+                                           whitening_info_source: Dict,
+                                           whitening_info_target: Dict) -> torch.Tensor:
+        """
+        Compute restriction map accounting for eigenvalue preservation mode.
+        
+        When both source and target are in eigenvalue preservation mode,
+        uses weighted Procrustes with Σ_target as the weight matrix.
+        Otherwise falls back to standard Procrustes.
+        
+        Args:
+            K_source: Source Gram matrix
+            K_target: Target Gram matrix
+            whitening_info_source: Source whitening information
+            whitening_info_target: Target whitening information
+            
+        Returns:
+            R: Restriction map tensor (target_rank × source_rank)
+        """
+        try:
+            # Extract whitening matrices and preservation status
+            W_source = whitening_info_source['whitening_matrix']
+            W_target = whitening_info_target['whitening_matrix']
+            
+            source_preserves = whitening_info_source.get('preserve_eigenvalues', False)
+            target_preserves = whitening_info_target.get('preserve_eigenvalues', False)
+            
+            if source_preserves and target_preserves:
+                # Both in eigenvalue preservation mode: use weighted Procrustes with double precision
+                logger.debug("Using weighted Procrustes for eigenvalue-preserving restriction (double precision)")
+                
+                # Extract eigenvalue diagonal matrix as weight
+                Sigma_target = whitening_info_target.get('eigenvalue_diagonal')
+                if Sigma_target is None:
+                    raise RestrictionError("Missing eigenvalue_diagonal for target in eigenvalue preservation mode")
+                
+                # Convert to double precision for better numerical stability
+                W_source_double = W_source.double()
+                W_target_double = W_target.double()
+                Sigma_target_double = Sigma_target.double()
+                
+                # Validate and condition the eigenvalue matrix
+                eigenvals_diag = torch.diag(Sigma_target_double)
+                if torch.any(eigenvals_diag <= 0):
+                    logger.warning(f"Found non-positive eigenvalues in Sigma_target: min={torch.min(eigenvals_diag)}")
+                    # Ensure all eigenvalues are positive for mathematical validity
+                    eigenvals_diag = torch.clamp(eigenvals_diag, min=1e-12)
+                    Sigma_target_double = torch.diag(eigenvals_diag)
+                    
+                # Check condition number
+                max_eval = torch.max(eigenvals_diag)
+                min_eval = torch.min(eigenvals_diag)
+                condition_number = max_eval / min_eval
+                if condition_number > 1e12:
+                    logger.warning(f"Eigenvalue matrix is ill-conditioned: condition_number={condition_number}")
+                    # Apply more aggressive regularization for ill-conditioned matrices
+                    regularization = max_eval * 1e-12
+                    eigenvals_diag = eigenvals_diag + regularization
+                    Sigma_target_double = torch.diag(eigenvals_diag)
+                
+                # Extract ranks for dimensional safety
+                source_rank = W_source_double.shape[0]
+                target_rank = W_target_double.shape[0]
+                n_original = W_source_double.shape[1]  # Original space dimension
+                
+                logger.debug(f"Computing weighted restriction (double precision): target_rank={target_rank}, source_rank={source_rank}, n_original={n_original}")
+                
+                # Compute cross-covariance between whitening maps in double precision
+                # M = W_target @ W_source.T where dimensions are (target_rank × n_original) @ (n_original × source_rank)
+                M_double = W_target_double @ W_source_double.T  # Shape: (target_rank × source_rank)
+                
+                # Apply eigenvalue weighting to the cross-covariance with improved numerical stability
+                eigenvals_target, eigenvecs_target = torch.linalg.eigh(Sigma_target_double)
+                
+                # Use better eigenvalue conditioning in double precision
+                # Regularize very small eigenvalues more aggressively to prevent numerical instability
+                max_eigenval = torch.max(eigenvals_target)
+                min_threshold = max_eigenval * 1e-10  # Relative threshold
+                eigenvals_regularized = torch.clamp(eigenvals_target, min=min_threshold)
+                sqrt_eigenvals = torch.sqrt(eigenvals_regularized)
+                
+                # Apply weighting: M_weighted = diag(sqrt(eigenvals)) @ M
+                M_weighted_double = torch.diag(sqrt_eigenvals) @ M_double
+                
+                # SVD of weighted cross-covariance in double precision with better conditioning
+                try:
+                    U_double, S_double, Vh_double = torch.linalg.svd(M_weighted_double, full_matrices=False)
+                    
+                    # Filter out very small singular values for better conditioning
+                    max_singular = torch.max(S_double)
+                    # Use more aggressive threshold for better numerical stability
+                    S_threshold = max_singular * 1e-10  # More conservative than 1e-12
+                    valid_indices = S_double > S_threshold
+                    
+                    if torch.sum(valid_indices) > 0:
+                        # Use only well-conditioned singular values
+                        U_filtered = U_double[:, valid_indices]
+                        Vh_filtered = Vh_double[valid_indices, :]
+                        R_double = U_filtered @ Vh_filtered
+                    else:
+                        # Fallback to full SVD if all singular values are small
+                        R_double = U_double @ Vh_double
+                        
+                except torch.linalg.LinAlgError:
+                    # Fallback to standard Procrustes if SVD fails
+                    logger.warning("SVD failed in weighted Procrustes, falling back to standard approach")
+                    U_double, S_double, Vh_double = torch.linalg.svd(M_double, full_matrices=False)
+                    R_double = U_double @ Vh_double
+                
+                # Convert back to original precision
+                R = R_double.to(W_source.dtype)
+                
+                logger.debug(f"Eigenvalue-aware restriction computed with weighted Procrustes")
+                
+            else:
+                # Standard mode or mixed mode: use unweighted Procrustes
+                logger.debug("Using standard Procrustes for identity inner product")
+                
+                # Compute cross-covariance in whitened space
+                M = W_target @ W_source.T
+                
+                # Standard SVD solution
+                U, S, Vh = torch.linalg.svd(M, full_matrices=False)
+                R = U @ Vh
+                
+                logger.debug(f"Standard restriction computed with unweighted Procrustes")
+            
+            return R
+            
+        except Exception as e:
+            raise RestrictionError(f"Eigenvalue-aware restriction computation failed: {e}")
+    
     def compute_restriction(self,
                           K_source: torch.Tensor,
                           K_target: torch.Tensor,
@@ -473,6 +667,146 @@ class RestrictionManager:
                             logger.warning(f"Transitivity check failed for {A}→{B}→{C}: {e}")
         
         return errors
+    
+    def compute_restrictions_with_eigenvalues(self,
+                                             gram_matrices: Dict[str, torch.Tensor],
+                                             whitening_infos: Dict[str, Dict],
+                                             poset: nx.DiGraph,
+                                             preserve_eigenvalues: bool = False,
+                                             validate: bool = True,
+                                             regularization_info: Optional[Dict[str, Dict]] = None) -> Dict[Tuple[str, str], torch.Tensor]:
+        """
+        Compute restriction maps with eigenvalue-aware algorithm selection.
+        
+        Main entry point for Phase 4 eigenvalue-preserving restriction computation.
+        Automatically selects between weighted Procrustes (for eigenvalue preservation)
+        and standard Procrustes (for identity inner product) based on whitening info.
+        
+        Args:
+            gram_matrices: Dictionary of original Gram matrices
+            whitening_infos: Pre-computed whitening information for each node
+            poset: Network structure as directed graph
+            preserve_eigenvalues: Global eigenvalue preservation flag
+            validate: Whether to validate restriction orthogonality
+            regularization_info: Optional regularization metadata
+            
+        Returns:
+            Dictionary mapping edges to restriction map tensors
+            
+        Raises:
+            RestrictionError: If restriction computation fails
+        """
+        logger.info(f"Computing eigenvalue-aware restrictions for {len(poset.edges())} edges "
+                   f"(preserve_eigenvalues={preserve_eigenvalues})")
+        
+        # Check if any matrices were regularized
+        regularized_layers = set()
+        if regularization_info:
+            for layer_name, reg_info in regularization_info.items():
+                if reg_info.get('regularized', False):
+                    regularized_layers.add(layer_name)
+                    logger.debug(f"Layer {layer_name} was regularized with λ={reg_info.get('regularization_strength', 'N/A'):.2e}")
+        
+        if regularized_layers:
+            logger.info(f"Processing {len(regularized_layers)} regularized layers")
+        
+        restrictions = {}
+        failed_edges = []
+        eigenvalue_mode_edges = 0
+        standard_mode_edges = 0
+        
+        for source, target in poset.edges():
+            if (source in gram_matrices and target in gram_matrices and 
+                source in whitening_infos and target in whitening_infos):
+                try:
+                    # Get whitening information
+                    source_whitening = whitening_infos[source]
+                    target_whitening = whitening_infos[target]
+                    
+                    source_rank = source_whitening['rank']
+                    target_rank = target_whitening['rank']
+                    
+                    logger.debug(f"Computing restriction {source} → {target}: ({target_rank}, {source_rank})")
+                    
+                    # Use eigenvalue-aware restriction computation
+                    restriction = self.compute_eigenvalue_aware_restriction(
+                        gram_matrices[source],
+                        gram_matrices[target],
+                        source_whitening,
+                        target_whitening
+                    )
+                    
+                    # Count which mode was used
+                    source_preserves = source_whitening.get('preserve_eigenvalues', False)
+                    target_preserves = target_whitening.get('preserve_eigenvalues', False)
+                    
+                    if preserve_eigenvalues and source_preserves and target_preserves:
+                        eigenvalue_mode_edges += 1
+                    else:
+                        standard_mode_edges += 1
+                    
+                    # Verify dimensions match expected
+                    expected_shape = (target_rank, source_rank)
+                    if restriction.shape != expected_shape:
+                        logger.error(f"Dimension mismatch for {source} → {target}: "
+                                   f"expected {expected_shape}, got {restriction.shape}")
+                        failed_edges.append((source, target))
+                        continue
+                    
+                    # Optional validation
+                    if validate:
+                        try:
+                            self._validate_restriction_orthogonality(restriction, source, target)
+                        except Exception as e:
+                            logger.warning(f"Orthogonality validation failed for {source} → {target}: {e}")
+                    
+                    restrictions[(source, target)] = restriction
+                    logger.debug(f"✓ Computed restriction {source} → {target}: {restriction.shape}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to compute restriction {source} → {target}: {e}")
+                    failed_edges.append((source, target))
+                    continue
+            else:
+                missing_items = []
+                if source not in gram_matrices: missing_items.append(f"gram_matrix[{source}]")
+                if target not in gram_matrices: missing_items.append(f"gram_matrix[{target}]")
+                if source not in whitening_infos: missing_items.append(f"whitening_info[{source}]")
+                if target not in whitening_infos: missing_items.append(f"whitening_info[{target}]")
+                logger.warning(f"Missing data for edge {source} → {target}: {', '.join(missing_items)}")
+                failed_edges.append((source, target))
+        
+        if failed_edges:
+            logger.warning(f"Failed to compute {len(failed_edges)} restrictions")
+        
+        logger.info(f"Successfully computed {len(restrictions)} restriction maps: "
+                   f"{eigenvalue_mode_edges} eigenvalue-aware, {standard_mode_edges} standard")
+        
+        return restrictions
+    
+    def _validate_restriction_orthogonality(self, R: torch.Tensor, source: str, target: str, tol: float = 1e-8):
+        """Validate orthogonality constraint for restriction map."""
+        target_rank, source_rank = R.shape
+        
+        if target_rank >= source_rank:
+            # Column orthonormal case: R^T R = I
+            RTR = R.T @ R
+            I = torch.eye(source_rank, device=R.device, dtype=R.dtype)
+            error = torch.norm(RTR - I).item()
+            constraint_type = "column orthonormal (R^T R = I)"
+        else:
+            # Row orthonormal case: R R^T = I
+            RRT = R @ R.T
+            I = torch.eye(target_rank, device=R.device, dtype=R.dtype)
+            error = torch.norm(RRT - I).item()
+            constraint_type = "row orthonormal (R R^T = I)"
+        
+        if error > tol:
+            logger.warning(f"Orthogonality violation for {source} → {target}: "
+                         f"{constraint_type}, error={error:.2e} > {tol:.2e}")
+        else:
+            logger.debug(f"Orthogonality verified for {source} → {target}: "
+                        f"{constraint_type}, error={error:.2e}")
 
 
 def compute_restrictions_for_sheaf(gram_matrices: Dict[str, torch.Tensor],
