@@ -278,7 +278,8 @@ class NeurosheafAnalyzer:
         
         directed_builder = DirectedSheafBuilder(
             directionality_parameter=directionality_parameter,
-            device=builder_device
+            device=builder_device,
+            preserve_eigenvalues=preserve_eigenvalues
         )
         directed_sheaf = directed_builder.build_from_activations(
             model=model,

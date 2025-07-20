@@ -49,8 +49,9 @@ class SheafBuilder:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (enables Hodge formulation)
         """
         self.poset_extractor = FXPosetExtractor()
-        self.restriction_manager = RestrictionManager()
         self.whitening_processor = WhiteningProcessor(preserve_eigenvalues=preserve_eigenvalues)
+        # Pass the whitening processor to restriction manager
+        self.restriction_manager = RestrictionManager(whitening_processor=self.whitening_processor)
         self.preserve_eigenvalues = preserve_eigenvalues
 
     def build_from_activations(self, 
@@ -154,7 +155,7 @@ class SheafBuilder:
                         'eigenvectors': info.get('eigenvectors'),
                         'rank': info['effective_rank'],  # Use effective_rank from WhiteningProcessor
                         'eigenvalue_diagonal': info.get('eigenvalue_diagonal'),
-                        'preserve_eigenvalues': self.preserve_eigenvalues,
+                        'preserve_eigenvalues': use_eigenvalues,  # Use runtime value, not self.preserve_eigenvalues
                         'condition_number': info.get('condition_number', 1.0),
                         'regularized': info.get('regularized', False)
                     }

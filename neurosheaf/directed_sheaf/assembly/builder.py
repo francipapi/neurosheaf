@@ -79,17 +79,20 @@ class DirectedSheafBuilder:
     def __init__(self, 
                  directionality_parameter: float = 0.25,
                  validate_construction: bool = True,
-                 device: Optional[torch.device] = None):
+                 device: Optional[torch.device] = None,
+                 preserve_eigenvalues: bool = False):
         """Initialize the Directed Sheaf Builder.
         
         Args:
             directionality_parameter: q parameter controlling directional strength
             validate_construction: Whether to validate mathematical properties
             device: PyTorch device for computations
+            preserve_eigenvalues: Whether to preserve eigenvalues in whitening (enables Hodge formulation)
         """
         self.q = directionality_parameter
         self.validate_construction = validate_construction
         self.device = device or torch.device('cpu')
+        self.preserve_eigenvalues = preserve_eigenvalues
         
         # Initialize component modules
         self.complex_extender = ComplexStalkExtender(validate_extension=validate_construction)
@@ -246,8 +249,10 @@ class DirectedSheafBuilder:
             from ...sheaf.assembly.builder import SheafBuilder
             
             # Create base builder with proper eigenvalue preservation setting
-            # Use the provided parameter or default to False
-            eigenvalue_setting = preserve_eigenvalues if preserve_eigenvalues is not None else False
+            # Use the runtime parameter, otherwise use builder's default, otherwise False
+            eigenvalue_setting = (preserve_eigenvalues 
+                                if preserve_eigenvalues is not None 
+                                else self.preserve_eigenvalues)
             base_builder = SheafBuilder(preserve_eigenvalues=eigenvalue_setting)
             logger.info(f"Created base SheafBuilder with preserve_eigenvalues={eigenvalue_setting}")
             

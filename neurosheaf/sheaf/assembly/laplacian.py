@@ -265,6 +265,14 @@ class SheafLaplacianBuilder:
         
         logger.info("Building mathematically correct Hodge Laplacian")
         
+        # Validate eigenvalue metadata
+        if not hasattr(sheaf, 'eigenvalue_metadata') or sheaf.eigenvalue_metadata is None:
+            raise ValueError("Hodge Laplacian requires eigenvalue metadata. "
+                            "Ensure preserve_eigenvalues=True was used during construction.")
+        
+        if not sheaf.eigenvalue_metadata.preserve_eigenvalues:
+            raise ValueError("Hodge Laplacian requires preserve_eigenvalues=True")
+        
         # Get sheaf components
         poset = sheaf.poset
         stalks = sheaf.stalks

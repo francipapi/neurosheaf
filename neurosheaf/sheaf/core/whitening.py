@@ -203,6 +203,7 @@ class WhiteningProcessor:
             - W: Whitening map (r x n)
             - info: Whitening metadata
         """
+        logger.debug(f"WhiteningProcessor.whiten_gram_matrix called with preserve_eigenvalues={self.preserve_eigenvalues}")
         W, info = self.compute_whitening_map(K)
         r = W.shape[0]
         dtype = W.dtype

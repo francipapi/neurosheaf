@@ -302,10 +302,14 @@ class DirectedSheafLaplacianBuilder:
         if (directed_sheaf.base_sheaf and 
             hasattr(directed_sheaf.base_sheaf, 'eigenvalue_metadata') and 
             directed_sheaf.base_sheaf.eigenvalue_metadata is not None):
-            return directed_sheaf.base_sheaf.eigenvalue_metadata.preserve_eigenvalues
+            result = directed_sheaf.base_sheaf.eigenvalue_metadata.preserve_eigenvalues
+            logger.debug(f"_uses_eigenvalue_preservation: detected from base sheaf = {result}")
+            return result
         
         # Check directed sheaf metadata directly
-        return directed_sheaf.metadata.get('preserve_eigenvalues', False)
+        result = directed_sheaf.metadata.get('preserve_eigenvalues', False)
+        logger.debug(f"_uses_eigenvalue_preservation: from metadata = {result}")
+        return result
     
     def _build_hermitian_laplacian_with_eigenvalues(self, directed_sheaf: DirectedSheaf) -> torch.Tensor:
         """Build Hermitian Laplacian with eigenvalue preservation using CORRECTED formulation.

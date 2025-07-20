@@ -29,16 +29,18 @@ class RestrictionManager:
     optimal mathematical properties.
     """
     
-    def __init__(self, use_double_precision: bool = False, batch_size: int = None):
+    def __init__(self, whitening_processor: Optional[WhiteningProcessor] = None, use_double_precision: bool = False, batch_size: int = None):
         """Initialize the restriction manager.
         
         Args:
+            whitening_processor: Optional WhiteningProcessor instance to use.
+                               If None, creates a new one with default settings.
             use_double_precision: Whether to use double precision for computations
             batch_size: Hint for adaptive precision selection
         """
         self.use_double_precision = use_double_precision
         self.batch_size = batch_size
-        self.whitening_processor = WhiteningProcessor(use_double_precision=use_double_precision)
+        self.whitening_processor = whitening_processor or WhiteningProcessor(use_double_precision=use_double_precision)
     
     def compute_all_restrictions(self, 
                                gram_matrices: Dict[str, torch.Tensor],
@@ -375,6 +377,9 @@ class RestrictionManager:
             
             source_preserves = whitening_info_source.get('preserve_eigenvalues', False)
             target_preserves = whitening_info_target.get('preserve_eigenvalues', False)
+            
+            logger.debug(f"compute_eigenvalue_aware_restriction: source_preserves={source_preserves}, "
+                        f"target_preserves={target_preserves}")
             
             if source_preserves and target_preserves:
                 # Both in eigenvalue preservation mode: use weighted Procrustes with double precision
