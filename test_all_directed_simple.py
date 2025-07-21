@@ -384,7 +384,7 @@ rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
 
 # Try to load MLP model first (simpler architecture)
 try:
-    mlp_model = load_model(MLPModel, mlp_path, device="cpu")
+    mlp_model = load_model(MLPModel, mlp_path1, device="cpu")
     print(f"✅ Successfully loaded MLP model with {sum(p.numel() for p in mlp_model.parameters()):,} parameters")
 except Exception as e:
     print(f"❌ Error loading MLP model: {e}")

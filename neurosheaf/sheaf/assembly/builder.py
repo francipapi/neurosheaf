@@ -167,7 +167,7 @@ class SheafBuilder:
                 for node_id, info in whitening_info.items():
                     rank = info['rank']
                     
-                    if self.preserve_eigenvalues and 'eigenvalue_diagonal' in info and info['eigenvalue_diagonal'] is not None:
+                    if use_eigenvalues and 'eigenvalue_diagonal' in info and info['eigenvalue_diagonal'] is not None:
                         # Use eigenvalue diagonal matrix as stalk
                         stalks[node_id] = info['eigenvalue_diagonal']
                         logger.debug(f"Created eigenvalue stalk for {node_id}: {stalks[node_id].shape}")
@@ -183,7 +183,7 @@ class SheafBuilder:
                     gram_matrices, 
                     whitening_info,
                     poset,
-                    preserve_eigenvalues=self.preserve_eigenvalues,
+                    preserve_eigenvalues=use_eigenvalues,
                     validate=validate,
                     regularization_info=regularization_info if use_gram_regularization else None
                 )
