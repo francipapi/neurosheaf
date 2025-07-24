@@ -18,6 +18,7 @@ from .utils.profiling import profile_memory, profile_time
 # Import directed sheaf components
 from .directed_sheaf import DirectedSheafBuilder, DirectedSheafAdapter
 from .sheaf.assembly.builder import SheafBuilder
+from .sheaf.core.gw_config import GWConfig
 from .spectral.persistent import PersistentSpectralAnalyzer
 
 
@@ -96,6 +97,8 @@ class NeurosheafAnalyzer:
         self,
         model: nn.Module,
         data: torch.Tensor,
+        method: str = 'procrustes',
+        gw_config: Optional[GWConfig] = None,
         batch_size: Optional[int] = None,
         layers: Optional[List[str]] = None,
         directed: bool = False,
@@ -106,13 +109,16 @@ class NeurosheafAnalyzer:
     ) -> Dict[str, Any]:
         """Perform complete neurosheaf analysis.
         
-        Supports both directed and undirected sheaf analysis. For directed analysis,
-        the method constructs complex-valued stalks with Hermitian Laplacians to
-        capture directional information in neural networks.
+        Supports both directed and undirected sheaf analysis with multiple construction methods.
+        For directed analysis, constructs complex-valued stalks with Hermitian Laplacians to
+        capture directional information. For undirected analysis, supports both traditional
+        Procrustes-based and Gromov-Wasserstein optimal transport-based sheaf construction.
         
         Args:
             model: PyTorch neural network model
             data: Input data tensor
+            method: Sheaf construction method ('procrustes' [default], 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: Configuration for Gromov-Wasserstein method (uses defaults if None when method='gromov_wasserstein')
             batch_size: Batch size for processing (auto-detected if None)
             layers: Specific layers to analyze (all if None)
             directed: Whether to perform directed sheaf analysis
@@ -129,6 +135,8 @@ class NeurosheafAnalyzer:
                 - 'spectral_analysis': Spectral analysis results (if applicable)
                 - 'device_info': Device and hardware information
                 - 'performance': Performance metrics
+                - 'construction_method': Sheaf construction method used
+                - 'gw_config': GW configuration (if method='gromov_wasserstein')
                 - 'directionality_parameter': q parameter (if directed)
                 - 'preserve_eigenvalues': eigenvalue preservation setting
                 
@@ -147,6 +155,20 @@ class NeurosheafAnalyzer:
         if directed and not (0.0 <= directionality_parameter <= 1.0):
             raise ValidationError("directionality_parameter must be between 0.0 and 1.0")
         
+        # Validate construction method
+        valid_methods = ['procrustes', 'gromov_wasserstein', 'whitened_procrustes']
+        if method not in valid_methods:
+            raise ValidationError(f"Unknown method: {method}. Valid methods: {valid_methods}")
+        
+        # Set default GW config if needed
+        if method == 'gromov_wasserstein' and gw_config is None:
+            gw_config = GWConfig()
+            self.logger.info("Using default GW configuration")
+        
+        # Validate GW config if provided
+        if gw_config is not None:
+            gw_config.validate()
+        
         # Move model and data to device (unless eigenvalue preservation will force CPU later)
         target_device = self.device
         if preserve_eigenvalues and self.device.type == 'mps':
@@ -159,12 +181,13 @@ class NeurosheafAnalyzer:
         try:
             if directed:
                 return self._analyze_directed(
-                    model, data, directionality_parameter, preserve_eigenvalues,
-                    use_gram_regularization, regularization_config
+                    model, data, method, gw_config, directionality_parameter, 
+                    preserve_eigenvalues, use_gram_regularization, regularization_config
                 )
             else:
                 return self._analyze_undirected(
-                    model, data, preserve_eigenvalues, use_gram_regularization, regularization_config
+                    model, data, method, gw_config, preserve_eigenvalues, 
+                    use_gram_regularization, regularization_config
                 )
         except Exception as e:
             self.logger.error(f"Analysis failed: {e}")
@@ -251,14 +274,16 @@ class NeurosheafAnalyzer:
         
         return memory_info
     
-    def _analyze_directed(self, model: nn.Module, data: torch.Tensor, directionality_parameter: float,
-                         preserve_eigenvalues: Optional[bool] = None, use_gram_regularization: bool = False, 
-                         regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _analyze_directed(self, model: nn.Module, data: torch.Tensor, method: str, gw_config: Optional[GWConfig],
+                         directionality_parameter: float, preserve_eigenvalues: Optional[bool] = None, 
+                         use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
         
         Args:
             model: PyTorch model
             data: Input data tensor
+            method: Sheaf construction method
+            gw_config: GW configuration (if applicable)
             directionality_parameter: q parameter controlling directional strength
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
@@ -302,6 +327,8 @@ class NeurosheafAnalyzer:
             'directed_sheaf': directed_sheaf,
             'real_laplacian': real_laplacian,
             'laplacian_metadata': laplacian_metadata,
+            'construction_method': method,
+            'gw_config': gw_config.to_dict() if gw_config else None,
             'directionality_parameter': directionality_parameter,
             'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
@@ -320,13 +347,19 @@ class NeurosheafAnalyzer:
         self.logger.info(f"Directed analysis completed in {construction_time:.3f}s")
         return results
     
-    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor, preserve_eigenvalues: Optional[bool] = None,
-                           use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Perform undirected sheaf analysis.
+    def _analyze_undirected(self, model: nn.Module, data: torch.Tensor, method: str, gw_config: Optional[GWConfig],
+                           preserve_eigenvalues: Optional[bool] = None, use_gram_regularization: bool = False, 
+                           regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Perform undirected sheaf analysis with method routing.
+        
+        Routes to appropriate sheaf construction method based on the method parameter.
+        Supports traditional Procrustes-based methods and Gromov-Wasserstein optimal transport.
         
         Args:
             model: PyTorch model
             data: Input data tensor
+            method: Sheaf construction method ('procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: GW configuration (required when method='gromov_wasserstein')
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
@@ -337,16 +370,26 @@ class NeurosheafAnalyzer:
         import time
         start_time = time.time()
         
-        self.logger.info("Building undirected sheaf")
+        self.logger.info(f"Building undirected sheaf using method: {method}")
         
-        # Build standard real sheaf
+        # Map API method names to SheafBuilder restriction methods
+        method_mapping = {
+            'procrustes': 'scaled_procrustes',
+            'gromov_wasserstein': 'gromov_wasserstein',
+            'whitened_procrustes': 'whitened_procrustes'
+        }
+        
+        restriction_method = method_mapping[method]
+        
+        # Build sheaf with appropriate method
         # Use the device determined at the API level (CPU if eigenvalue preservation on MPS)
-        sheaf_builder = SheafBuilder()
+        sheaf_builder = SheafBuilder(restriction_method=restriction_method)
         sheaf = sheaf_builder.build_from_activations(
             model, data,
             preserve_eigenvalues=preserve_eigenvalues,
             use_gram_regularization=use_gram_regularization,
-            regularization_config=regularization_config
+            regularization_config=regularization_config,
+            gw_config=gw_config
         )
         
         construction_time = time.time() - start_time
@@ -354,6 +397,8 @@ class NeurosheafAnalyzer:
         results = {
             'analysis_type': 'undirected',
             'sheaf': sheaf,
+            'construction_method': method,
+            'gw_config': gw_config.to_dict() if gw_config else None,
             'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
@@ -374,6 +419,8 @@ class NeurosheafAnalyzer:
         self,
         model: nn.Module,
         data: torch.Tensor,
+        method: str = 'procrustes',
+        gw_config: Optional[GWConfig] = None,
         directionality_parameter: float = 0.25,
         preserve_eigenvalues: Optional[bool] = None,
         **kwargs
@@ -385,6 +432,8 @@ class NeurosheafAnalyzer:
         Args:
             model: PyTorch neural network model
             data: Input data tensor
+            method: Sheaf construction method ('procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: GW configuration (uses defaults if None when method='gromov_wasserstein')
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             **kwargs: Additional arguments passed to analyze()
@@ -395,6 +444,8 @@ class NeurosheafAnalyzer:
         return self.analyze(
             model=model,
             data=data,
+            method=method,
+            gw_config=gw_config,
             directed=True,
             directionality_parameter=directionality_parameter,
             preserve_eigenvalues=preserve_eigenvalues,
@@ -405,6 +456,8 @@ class NeurosheafAnalyzer:
         self,
         model: nn.Module,
         data: torch.Tensor,
+        method: str = 'procrustes',
+        gw_config: Optional[GWConfig] = None,
         directionality_parameter: float = 0.25,
         preserve_eigenvalues: Optional[bool] = None
     ) -> Dict[str, Any]:
@@ -417,6 +470,8 @@ class NeurosheafAnalyzer:
         Args:
             model: PyTorch neural network model
             data: Input data tensor
+            method: Sheaf construction method ('procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: GW configuration (uses defaults if None when method='gromov_wasserstein')
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             
@@ -430,8 +485,8 @@ class NeurosheafAnalyzer:
         self.logger.info("Starting directed vs undirected comparison...")
         
         # Perform both analyses
-        directed_results = self.analyze_directed(model, data, directionality_parameter, preserve_eigenvalues)
-        undirected_results = self.analyze(model, data, directed=False, preserve_eigenvalues=preserve_eigenvalues)
+        directed_results = self.analyze_directed(model, data, method, gw_config, directionality_parameter, preserve_eigenvalues)
+        undirected_results = self.analyze(model, data, method=method, gw_config=gw_config, directed=False, preserve_eigenvalues=preserve_eigenvalues)
         
         # Compute comparison metrics
         comparison = self._compute_comparison_metrics(directed_results, undirected_results)
@@ -545,7 +600,9 @@ class NeurosheafAnalyzer:
                         model1: nn.Module,
                         model2: nn.Module,
                         data: torch.Tensor,
-                        method: str = 'dtw',
+                        comparison_method: str = 'dtw',
+                        sheaf_method: str = 'procrustes',
+                        gw_config: Optional[GWConfig] = None,
                         eigenvalue_index: Optional[int] = None,
                         multivariate: bool = False,
                         filtration_type: str = 'threshold',
@@ -561,7 +618,9 @@ class NeurosheafAnalyzer:
             model1: First neural network to compare
             model2: Second neural network to compare
             data: Input data for activation analysis
-            method: Comparison method ('dtw', 'euclidean', 'cosine')
+            comparison_method: Comparison method ('dtw', 'euclidean', 'cosine')
+            sheaf_method: Sheaf construction method ('procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: GW configuration (uses defaults if None when sheaf_method='gromov_wasserstein')
             eigenvalue_index: Index of eigenvalue to compare (None = all)
             multivariate: Whether to use multivariate DTW
             filtration_type: Type of filtration ('threshold', 'cka_based', 'custom')
@@ -585,17 +644,17 @@ class NeurosheafAnalyzer:
             ...                                      filtration_type='threshold', n_steps=100)
             >>> print(f"Similarity: {comparison['similarity_score']:.3f}")
         """
-        self.logger.info(f"Comparing two networks using {method} method")
+        self.logger.info(f"Comparing two networks using {comparison_method} method with {sheaf_method} sheaves")
         
         # Analyze both models to get sheaves
-        analysis1 = self.analyze(model1, data, **kwargs)
-        analysis2 = self.analyze(model2, data, **kwargs)
+        analysis1 = self.analyze(model1, data, method=sheaf_method, gw_config=gw_config, **kwargs)
+        analysis2 = self.analyze(model2, data, method=sheaf_method, gw_config=gw_config, **kwargs)
         
         # Extract sheaves for spectral comparison
         sheaf1 = analysis1['sheaf']
         sheaf2 = analysis2['sheaf']
         
-        if method == 'dtw':
+        if comparison_method == 'dtw':
             # Use DTW for eigenvalue evolution comparison
             comparison_result = self.spectral_analyzer.compare_filtration_evolution(
                 sheaf1, sheaf2,
@@ -608,15 +667,17 @@ class NeurosheafAnalyzer:
             
         else:
             # Fallback to simpler comparison methods
-            comparison_result = self._compare_networks_simple(analysis1, analysis2, method)
+            comparison_result = self._compare_networks_simple(analysis1, analysis2, comparison_method)
             similarity_score = comparison_result.get('similarity_score', 0.0)
         
         self.logger.info(f"Network comparison completed: similarity = {similarity_score:.3f}")
         
         return {
             'similarity_score': similarity_score,
-            'method': method,
-            'dtw_comparison': comparison_result if method == 'dtw' else None,
+            'comparison_method': comparison_method,
+            'sheaf_method': sheaf_method,
+            'gw_config': gw_config.to_dict() if gw_config else None,
+            'dtw_comparison': comparison_result if comparison_method == 'dtw' else None,
             'model1_analysis': analysis1,
             'model2_analysis': analysis2,
             'comparison_metadata': {
@@ -632,7 +693,9 @@ class NeurosheafAnalyzer:
     def compare_multiple_networks(self,
                                  models: List[nn.Module],
                                  data: torch.Tensor,
-                                 method: str = 'dtw',
+                                 comparison_method: str = 'dtw',
+                                 sheaf_method: str = 'procrustes',
+                                 gw_config: Optional[GWConfig] = None,
                                  eigenvalue_index: Optional[int] = None,
                                  multivariate: bool = False,
                                  filtration_type: str = 'threshold',
@@ -643,7 +706,9 @@ class NeurosheafAnalyzer:
         Args:
             models: List of neural networks to compare
             data: Input data for activation analysis
-            method: Comparison method ('dtw', 'euclidean', 'cosine')
+            comparison_method: Comparison method ('dtw', 'euclidean', 'cosine')
+            sheaf_method: Sheaf construction method ('procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            gw_config: GW configuration (uses defaults if None when sheaf_method='gromov_wasserstein')
             eigenvalue_index: Index of eigenvalue to compare (None = all)
             multivariate: Whether to use multivariate DTW
             filtration_type: Type of filtration ('threshold', 'cka_based', 'custom')
@@ -665,7 +730,7 @@ class NeurosheafAnalyzer:
             ...                                               filtration_type='cka_based', n_steps=30)
             >>> print(comparison['distance_matrix'])
         """
-        self.logger.info(f"Comparing {len(models)} networks using {method} method")
+        self.logger.info(f"Comparing {len(models)} networks using {comparison_method} method with {sheaf_method} sheaves")
         
         # Analyze all models to get sheaves
         analyses = []
@@ -673,11 +738,11 @@ class NeurosheafAnalyzer:
         
         for i, model in enumerate(models):
             self.logger.debug(f"Analyzing model {i+1}/{len(models)}")
-            analysis = self.analyze(model, data, **kwargs)
+            analysis = self.analyze(model, data, method=sheaf_method, gw_config=gw_config, **kwargs)
             analyses.append(analysis)
             sheaves.append(analysis['sheaf'])
         
-        if method == 'dtw':
+        if comparison_method == 'dtw':
             # Use DTW for multiple sheaf comparison
             comparison_result = self.spectral_analyzer.compare_multiple_sheaves(
                 sheaves,
@@ -693,7 +758,7 @@ class NeurosheafAnalyzer:
         else:
             # Fallback to simpler comparison methods
             distance_matrix, similarity_rankings = self._compare_multiple_simple(
-                analyses, method
+                analyses, comparison_method
             )
         
         # Perform cluster analysis on similarity matrix
@@ -706,7 +771,9 @@ class NeurosheafAnalyzer:
             'similarity_rankings': similarity_rankings,
             'individual_analyses': analyses,
             'cluster_analysis': cluster_analysis,
-            'method': method,
+            'comparison_method': comparison_method,
+            'sheaf_method': sheaf_method,
+            'gw_config': gw_config.to_dict() if gw_config else None,
             'comparison_metadata': {
                 'n_models': len(models),
                 'eigenvalue_index': eigenvalue_index,

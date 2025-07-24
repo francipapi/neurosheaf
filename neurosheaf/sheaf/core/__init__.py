@@ -22,7 +22,12 @@ from .gram_matrices import (
 )
 from .tikhonov import AdaptiveTikhonovRegularizer, create_regularizer_from_config
 
+# Gromov-Wasserstein components (Phase 1)
+from .gw_config import GWConfig
+from .gromov_wasserstein import GromovWassersteinComputer, GWResult, CostMatrixCache
+
 __all__ = [
+    # Existing core components
     "WhiteningProcessor",
     "scaled_procrustes_whitened",
     "scaled_procrustes_adaptive",
@@ -35,4 +40,10 @@ __all__ = [
     "validate_gram_matrix_properties",
     "AdaptiveTikhonovRegularizer",
     "create_regularizer_from_config",
+    
+    # Gromov-Wasserstein components (Phase 1)
+    "GWConfig",
+    "GromovWassersteinComputer", 
+    "GWResult",
+    "CostMatrixCache",
 ]

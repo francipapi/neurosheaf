@@ -398,9 +398,11 @@ if mlp_model is None:
 
 model = mlp_model
 
-# Generate sample data that matches your model's expected input (3D torus data)
-batch_size = 50
-data = 8*torch.randn(batch_size, 3)  # 3 features input for torus data
+from neurosheaf.data import generate
+
+# Generate torus data (exactly as in your original script)
+X, y = generate(n=50, big_radius=3, small_radius=1, solid=False)
+data = torch.tensor(X, dtype=torch.float32)
 print(f"Generated data shape: {data.shape}")
 
 # Use the high-level API for directed sheaf analysis
@@ -461,7 +463,7 @@ print(f"Sparsity: {laplacian_metadata.sparsity:.3f}")
 # Run spectral analysis using the analyzer
 print("\n=== Running Spectral Analysis ===")
 spectral_analyzer = PersistentSpectralAnalyzer(
-    default_n_steps=50,  # Reduced for faster execution and fewer convergence issues
+    default_n_steps=100,  # Reduced for faster execution and fewer convergence issues
     default_filtration_type='threshold'
 )
 
@@ -473,7 +475,7 @@ print(f"Compatibility sheaf created with {len(compatibility_sheaf.stalks)} stalk
 results = spectral_analyzer.analyze(
     compatibility_sheaf,
     filtration_type='threshold',
-    n_steps=50, # Reduced for faster execution and fewer convergence issues
+    n_steps=100, # Reduced for faster execution and fewer convergence issues
 )
 
 # Print results summary

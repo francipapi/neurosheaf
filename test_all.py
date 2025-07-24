@@ -15,6 +15,10 @@ from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
 from neurosheaf.utils import load_model
 from neurosheaf.api import NeurosheafAnalyzer
 
+import logging
+logging.getLogger('neurosheaf').setLevel(logging.DEBUG)
+
+
 # Set random seeds for reproducibility
 random_seed = 5670
 torch.manual_seed(random_seed)
@@ -381,7 +385,7 @@ rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
 
 # Try to load MLP model first (simpler architecture)
 try:
-    mlp_model = load_model(MLPModel, rand_mlp_path, device="cpu")
+    mlp_model = load_model(MLPModel, mlp_path1, device="cpu")
     print(f"✅ Successfully loaded MLP model with {sum(p.numel() for p in mlp_model.parameters()):,} parameters")
 except Exception as e:
     print(f"❌ Error loading MLP model: {e}")
@@ -402,13 +406,13 @@ print(f"Generated data shape: {data.shape}")
 # Use the high-level API instead of direct sheaf building
 print("\n=== Building Sheaf Using High-Level API ===")
 analyzer = NeurosheafAnalyzer(device='cpu')
-analysis = analyzer.analyze(model, data)
+analysis = analyzer.analyze(model, data, preserve_eigenvalues=True)
 sheaf = analysis['sheaf']
 
 print(f"Sheaf constructed: {len(sheaf.stalks)} stalks, {len(sheaf.restrictions)} restrictions")
-for i, (node, stalk) in enumerate(sheaf.stalks.items()):
-    if i < 3:  # Show first 3
-        print(f"  Stalk {node}: {stalk.shape}")
+
+# Use the new detailed print method
+sheaf.print_detailed_summary(max_items=5, verbosity='detailed')
 
 # Run spectral analysis using the analyzer
 print("\n=== Running Spectral Analysis ===")
@@ -421,6 +425,7 @@ results = spectral_analyzer.analyze(
     sheaf,
     filtration_type='threshold',
     n_steps=100, # Reduced for faster execution
+    
 )
 
 # Print results summary

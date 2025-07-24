@@ -54,6 +54,9 @@ dependencies = [
     # DTW dependencies for eigenvalue evolution comparison
     "dtaidistance>=2.3.10",   # High-performance DTW implementation
     "tslearn>=0.6.0",         # Multivariate time series analysis
+    
+    # Optimal transport dependencies for GW sheaf construction
+    "pot>=0.9.0",             # Python Optimal Transport library
 ]
 
 [project.optional-dependencies]

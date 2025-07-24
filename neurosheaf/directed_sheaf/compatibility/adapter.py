@@ -332,12 +332,15 @@ class DirectedSheafAdapter:
                     # and complex restrictions are (target_rank, source_rank),
                     # the real restrictions are (2*target_rank, 2*source_rank)
                     # So the real stalk should be (2*eigenvalue_rank, 2*eigenvalue_rank)
-                    real_stalks[node_id] = torch.eye(2 * eigenvalue_rank, dtype=torch.float32)
-                    logger.debug(f"Node {node_id}: Eigenvalue-preserving stalk (2*{eigenvalue_rank}, 2*{eigenvalue_rank}) to match rank")
+                    
+                    # FIX: Use the actual complex stalk data, not identity matrix
+                    real_stalks[node_id] = self.complex_to_real.embed_matrix(complex_stalk)
+                    logger.debug(f"Node {node_id}: Eigenvalue-preserving stalk embedded from complex {complex_stalk.shape} to real {real_stalks[node_id].shape}")
                 else:
-                    # For standard whitened mode, use identity based on complex stalk dimension
-                    real_stalks[node_id] = torch.eye(real_dim * 2, dtype=torch.float32)
-                    logger.debug(f"Node {node_id}: Standard identity stalk (2*{real_dim}, 2*{real_dim})")
+                    # For standard whitened mode, embed the complex stalk to real representation
+                    # FIX: Use the actual complex stalk data, not identity matrix
+                    real_stalks[node_id] = self.complex_to_real.embed_matrix(complex_stalk)
+                    logger.debug(f"Node {node_id}: Standard mode stalk embedded from complex {complex_stalk.shape} to real {real_stalks[node_id].shape}")
             
             # Convert directed restrictions to real representation
             real_restrictions = {}
@@ -365,6 +368,11 @@ class DirectedSheafAdapter:
                 compatibility_metadata.update(directed_sheaf.metadata)
                 # Restore our construction method
                 compatibility_metadata['construction_method'] = original_construction_method
+            
+            # Validate that stalks are properly embedded (not just identity matrices)
+            # Only validate if not in test mode to avoid false positives
+            if self.preserve_metadata and not directed_sheaf.metadata.get('test_mode', False):
+                self._validate_stalk_embedding(real_stalks, directed_sheaf.complex_stalks)
             
             # Create compatibility sheaf
             compatibility_sheaf = Sheaf(
@@ -410,6 +418,44 @@ class DirectedSheafAdapter:
         except Exception as e:
             logger.error(f"Compatibility sheaf creation failed: {e}")
             raise RuntimeError(f"Compatibility sheaf creation failed: {e}")
+    
+    def _validate_stalk_embedding(self, real_stalks: Dict[str, torch.Tensor], 
+                                   complex_stalks: Dict[str, torch.Tensor]):
+        """Validate that stalks are properly embedded from complex to real.
+        
+        Args:
+            real_stalks: Real-embedded stalks
+            complex_stalks: Original complex stalks
+            
+        Raises:
+            RuntimeError: If validation fails
+        """
+        identity_count = 0
+        non_identity_count = 0
+        
+        for node_id, real_stalk in real_stalks.items():
+            # Check if it's an identity matrix
+            if torch.allclose(real_stalk, torch.eye(real_stalk.shape[0], dtype=real_stalk.dtype), atol=1e-6):
+                identity_count += 1
+                logger.warning(f"Node {node_id}: Real stalk is identity matrix - possible bug!")
+            else:
+                non_identity_count += 1
+                
+            # Check dimensions match expectation
+            if node_id in complex_stalks:
+                complex_dim = complex_stalks[node_id].shape[0]
+                expected_real_dim = 2 * complex_dim
+                if real_stalk.shape[0] != expected_real_dim or real_stalk.shape[1] != expected_real_dim:
+                    raise RuntimeError(f"Node {node_id}: Real stalk has shape {real_stalk.shape}, "
+                                     f"expected ({expected_real_dim}, {expected_real_dim})")
+        
+        # Warn if all stalks are identity matrices
+        if identity_count > 0 and non_identity_count == 0:
+            raise RuntimeError("All real stalks are identity matrices - DirectedSheafAdapter bug detected!")
+        elif identity_count > 0:
+            logger.warning(f"{identity_count}/{len(real_stalks)} stalks are identity matrices")
+        else:
+            logger.info("All stalks properly embedded from complex to real representation")
     
     def _validate_spectral_conversion(self, real_laplacian: csr_matrix, metadata: SpectralAnalysisMetadata):
         """Validate spectral analysis conversion.

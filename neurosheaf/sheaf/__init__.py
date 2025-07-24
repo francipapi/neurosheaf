@@ -23,11 +23,16 @@ from .core import (
     validate_restriction_orthogonality,
     compute_gram_matrix,
     compute_gram_matrices_from_activations,
-    validate_gram_matrix_properties
+    validate_gram_matrix_properties,
+    # Gromov-Wasserstein components (Phase 1)
+    GWConfig,
+    GromovWassersteinComputer,
+    GWResult,
+    CostMatrixCache,
 )
 
 # Data structures
-from .data_structures import Sheaf, SheafValidationResult, WhiteningInfo
+from .data_structures import Sheaf, SheafValidationResult, WhiteningInfo, GWCouplingInfo
 
 # Extraction utilities
 from .extraction import (
@@ -58,10 +63,17 @@ __all__ = [
     "compute_gram_matrices_from_activations",
     "validate_gram_matrix_properties",
     
+    # Gromov-Wasserstein components (Phase 1)
+    "GWConfig",
+    "GromovWassersteinComputer",
+    "GWResult", 
+    "CostMatrixCache",
+    
     # Data structures
     "Sheaf",
     "SheafValidationResult", 
     "WhiteningInfo",
+    "GWCouplingInfo",
     
     # Extraction utilities
     "FXPosetExtractor",

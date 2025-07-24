@@ -35,24 +35,50 @@ class SheafBuilder:
     """
     Orchestrates the sheaf construction process with a unified, FX-first approach.
     
+    Supports multiple restriction computation methods:
+    - 'scaled_procrustes': Default whitened Procrustes analysis
+    - 'gromov_wasserstein': GW optimal transport based restrictions  
+    - 'whitened_procrustes': Legacy whitened Procrustes method
+    
+    Construction Pipeline:
     1. Extracts activations with keys matching FX node names.
     2. Extracts a poset, filtered by the available activation keys.
-    3. Computes Gram matrices from activations.
-    4. Computes restriction maps in whitened coordinates.
+    3. Computes Gram matrices from activations (for Procrustes) or uses activations directly (for GW).
+    4. Computes restriction maps using specified method.
     5. Assembles and validates the final Sheaf object.
     """
     
-    def __init__(self, preserve_eigenvalues: bool = False):
+    # Supported restriction computation methods
+    SUPPORTED_METHODS = ['scaled_procrustes', 'gromov_wasserstein', 'whitened_procrustes']
+    
+    def __init__(self, 
+                 preserve_eigenvalues: bool = False,
+                 restriction_method: str = 'scaled_procrustes'):
         """Initializes the sheaf builder.
         
         Args:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (enables Hodge formulation)
+            restriction_method: Method for computing restriction maps ('scaled_procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            
+        Raises:
+            ValueError: If restriction_method is not supported
         """
+        if restriction_method not in self.SUPPORTED_METHODS:
+            raise ValueError(f"Unknown restriction method: {restriction_method}. "
+                           f"Supported methods: {self.SUPPORTED_METHODS}")
+        
+        self.restriction_method = restriction_method
         self.poset_extractor = FXPosetExtractor()
         self.whitening_processor = WhiteningProcessor(preserve_eigenvalues=preserve_eigenvalues)
         # Pass the whitening processor to restriction manager
         self.restriction_manager = RestrictionManager(whitening_processor=self.whitening_processor)
         self.preserve_eigenvalues = preserve_eigenvalues
+        
+        # Initialize GW components if needed (lazy initialization)
+        self._gw_restriction_manager = None
+        
+        logger.info(f"SheafBuilder initialized: method={restriction_method}, "
+                   f"preserve_eigenvalues={preserve_eigenvalues}")
 
     def build_from_activations(self, 
                                 model: nn.Module, 
@@ -60,9 +86,15 @@ class SheafBuilder:
                                 validate: bool = True,
                                 preserve_eigenvalues: Optional[bool] = None,
                                 use_gram_regularization: bool = False,
-                                regularization_config: Optional[Dict[str, Any]] = None) -> Sheaf:
+                                regularization_config: Optional[Dict[str, Any]] = None,
+                                gw_config: Optional['GWConfig'] = None) -> Sheaf:
             """
             Builds a sheaf from a model and an example input tensor.
+
+            Routes to appropriate construction method based on restriction_method:
+            - 'scaled_procrustes': Uses whitened Procrustes analysis (default)
+            - 'gromov_wasserstein': Uses GW optimal transport
+            - 'whitened_procrustes': Uses legacy whitened Procrustes
 
             Args:
                 model: The PyTorch model to analyze.
@@ -72,182 +104,378 @@ class SheafBuilder:
                     If None, uses builder's default setting. If True, enables Hodge formulation.
                 use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices.
                 regularization_config: Configuration for Tikhonov regularization (if None, uses defaults).
+                gw_config: Configuration for GW method (ignored for non-GW methods).
 
             Returns:
-                A constructed Sheaf object with whitened stalks and eigenvalue metadata if enabled.
+                A constructed Sheaf object with method-specific stalks and restrictions.
             """
-            logger.info("Starting sheaf construction from model and input tensor.")
+            logger.info(f"Starting sheaf construction from model and input tensor using method: {self.restriction_method}")
             
-            # Use runtime override if provided, otherwise use builder's default
-            use_eigenvalues = (preserve_eigenvalues 
-                              if preserve_eigenvalues is not None 
-                              else self.preserve_eigenvalues)
+            # Route to appropriate construction method
+            if self.restriction_method == 'gromov_wasserstein':
+                return self._build_gw_sheaf(model, input_tensor, validate, gw_config)
+            else:
+                # Use standard Procrustes-based construction (existing logic)
+                return self._build_procrustes_sheaf(
+                    model, input_tensor, validate, preserve_eigenvalues,
+                    use_gram_regularization, regularization_config
+                )
+    
+    def _build_procrustes_sheaf(self,
+                               model: nn.Module, 
+                               input_tensor: torch.Tensor,
+                               validate: bool = True,
+                               preserve_eigenvalues: Optional[bool] = None,
+                               use_gram_regularization: bool = False,
+                               regularization_config: Optional[Dict[str, Any]] = None) -> Sheaf:
+        """Build sheaf using Procrustes-based methods (scaled_procrustes or whitened_procrustes).
+        
+        This method contains the original sheaf construction logic, separated for clarity.
+        """
+        # Use runtime override if provided, otherwise use builder's default
+        use_eigenvalues = (preserve_eigenvalues 
+                          if preserve_eigenvalues is not None 
+                          else self.preserve_eigenvalues)
+        
+        # Configure whitening processor for this build
+        original_preserve_eigenvalues = self.whitening_processor.preserve_eigenvalues
+        self.whitening_processor.preserve_eigenvalues = use_eigenvalues
+        
+        logger.info(f"Building Procrustes sheaf with eigenvalue preservation: {use_eigenvalues}")
+        
+        try:
+            # 1. Extract activations using the robust FX-based method.
+            # The keys of this dictionary are now the ground truth.
+            activations = extract_activations_fx(model, input_tensor)
             
-            # Configure whitening processor for this build
-            original_preserve_eigenvalues = self.whitening_processor.preserve_eigenvalues
-            self.whitening_processor.preserve_eigenvalues = use_eigenvalues
+            # 2. Extract poset filtered by the keys of our new activation dict.
+            available_activations = set(activations.keys())
+            poset, traced_model = self.poset_extractor.extract_activation_filtered_poset(model, available_activations)
             
-            logger.info(f"Building sheaf with eigenvalue preservation: {use_eigenvalues}")
+            # 3. Compute Gram matrices from the extracted activations.
+            # We must filter the activations to only those nodes present in the final poset.
+            poset_nodes = set(poset.nodes())
+            filtered_activations = {k: v for k, v in activations.items() if k in poset_nodes}
             
-            try:
-                # 1. Extract activations using the robust FX-based method.
-                # The keys of this dictionary are now the ground truth.
-                activations = extract_activations_fx(model, input_tensor)
-                
-                # 2. Extract poset filtered by the keys of our new activation dict.
-                available_activations = set(activations.keys())
-                poset, traced_model = self.poset_extractor.extract_activation_filtered_poset(model, available_activations)
-                
-                # 3. Compute Gram matrices from the extracted activations.
-                # We must filter the activations to only those nodes present in the final poset.
-                poset_nodes = set(poset.nodes())
-                filtered_activations = {k: v for k, v in activations.items() if k in poset_nodes}
-                
-                # Apply Tikhonov regularization if requested
-                if use_gram_regularization:
-                    # Create regularizer from config or use defaults
-                    if regularization_config is not None:
-                        from ..core import create_regularizer_from_config
-                        regularizer = create_regularizer_from_config(regularization_config)
-                    else:
-                        # Use adaptive strategy by default
-                        regularizer = AdaptiveTikhonovRegularizer(strategy='adaptive')
-                    
-                    # Infer batch size from input tensor
-                    batch_size = input_tensor.shape[0]
-                    
-                    # Compute regularized Gram matrices
-                    gram_matrices, regularization_info = compute_gram_matrices_with_regularization(
-                        filtered_activations, 
-                        regularizer=regularizer,
-                        batch_size=batch_size,
-                        validate=validate
-                    )
-                    
-                    logger.info(f"Applied Tikhonov regularization to {len(gram_matrices)} layers")
-                    
-                    # Log regularization details for problematic cases
-                    for layer_name, reg_info in regularization_info.items():
-                        if reg_info.get('regularized', False):
-                            condition_before = reg_info.get('condition_number', 'N/A')
-                            condition_after = reg_info.get('post_condition_number', 'N/A')
-                            lambda_val = reg_info.get('regularization_strength', 'N/A')
-                            logger.info(f"Layer {layer_name}: λ={lambda_val:.2e}, "
-                                      f"condition {condition_before:.2e} → {condition_after:.2e}")
+            # Apply Tikhonov regularization if requested
+            if use_gram_regularization:
+                # Create regularizer from config or use defaults
+                if regularization_config is not None:
+                    from ..core import create_regularizer_from_config
+                    regularizer = create_regularizer_from_config(regularization_config)
                 else:
-                    # Standard Gram matrix computation without regularization
-                    gram_matrices = compute_gram_matrices_from_activations(filtered_activations)
-                    regularization_info = {}
+                    # Use adaptive strategy by default
+                    regularizer = AdaptiveTikhonovRegularizer(strategy='adaptive')
                 
-                # 4. Use WhiteningProcessor for consistent whitening with eigenvalue preservation
-                whitening_info = {}
-                whitened_grams = {}
+                # Infer batch size from input tensor
+                batch_size = input_tensor.shape[0]
                 
-                logger.info("Computing whitening transformations using WhiteningProcessor")
-                
-                for node_id, K in gram_matrices.items():
-                    # Use the whitening processor for this node
-                    K_whitened, W, info = self.whitening_processor.whiten_gram_matrix(K)
-                    
-                    whitening_info[node_id] = {
-                        'whitening_matrix': W,
-                        'eigenvalues': info['eigenvalues'],
-                        'eigenvectors': info.get('eigenvectors'),
-                        'rank': info['effective_rank'],  # Use effective_rank from WhiteningProcessor
-                        'eigenvalue_diagonal': info.get('eigenvalue_diagonal'),
-                        'preserve_eigenvalues': use_eigenvalues,  # Use runtime value, not self.preserve_eigenvalues
-                        'condition_number': info.get('condition_number', 1.0),
-                        'regularized': info.get('regularized', False)
-                    }
-                    whitened_grams[node_id] = K_whitened
-                    logger.debug(f"Node {node_id}: whitened with rank={info['effective_rank']}, W.shape={W.shape}")
-                
-                # 5. Define stalks based on whitening results
-                stalks = {}
-                for node_id, info in whitening_info.items():
-                    rank = info['rank']
-                    
-                    if use_eigenvalues and 'eigenvalue_diagonal' in info and info['eigenvalue_diagonal'] is not None:
-                        # Use eigenvalue diagonal matrix as stalk
-                        stalks[node_id] = info['eigenvalue_diagonal']
-                        logger.debug(f"Created eigenvalue stalk for {node_id}: {stalks[node_id].shape}")
-                    else:
-                        # Use identity matrix as stalk (standard whitening)
-                        stalks[node_id] = torch.eye(int(rank), dtype=torch.float32)
-                        logger.debug(f"Created identity stalk for {node_id}: {stalks[node_id].shape}")
-                
-                # 6. Compute restriction maps using eigenvalue-aware algorithm selection
-                # This ensures dimensional consistency between stalks and restrictions
-                # and uses weighted Procrustes when eigenvalue preservation is enabled
-                restrictions = self.restriction_manager.compute_restrictions_with_eigenvalues(
-                    gram_matrices, 
-                    whitening_info,
-                    poset,
-                    preserve_eigenvalues=use_eigenvalues,
-                    validate=validate,
-                    regularization_info=regularization_info if use_gram_regularization else None
+                # Compute regularized Gram matrices
+                gram_matrices, regularization_info = compute_gram_matrices_with_regularization(
+                    filtered_activations, 
+                    regularizer=regularizer,
+                    batch_size=batch_size,
+                    validate=validate
                 )
                 
-                # 7. Create module type mapping for visualization
-                module_types = {}
-                if traced_model is not None:
-                    try:
-                        for node_id in poset.nodes():
-                            node_attrs = poset.nodes[node_id]
-                            if node_attrs.get('op') == 'call_module':
-                                target = node_attrs.get('target', '')
-                                try:
-                                    module = traced_model.get_submodule(target)
-                                    module_types[node_id] = type(module)
-                                    module_types[target] = type(module)  # Also store by target
-                                except:
-                                    pass
-                    except Exception as e:
-                        logger.debug(f"Could not extract module types: {e}")
+                logger.info(f"Applied Tikhonov regularization to {len(gram_matrices)} layers")
                 
-                # 7. Extract eigenvalue metadata if eigenvalue preservation is enabled
-                eigenvalue_metadata = None
-                if use_eigenvalues:
-                    eigenvalue_metadata = self._extract_eigenvalue_metadata(whitening_info)
+                # Log regularization details for problematic cases
+                for layer_name, reg_info in regularization_info.items():
+                    if reg_info.get('regularized', False):
+                        condition_before = reg_info.get('condition_number', 'N/A')
+                        condition_after = reg_info.get('post_condition_number', 'N/A')
+                        lambda_val = reg_info.get('regularization_strength', 'N/A')
+                        logger.info(f"Layer {layer_name}: λ={lambda_val:.2e}, "
+                                  f"condition {condition_before:.2e} → {condition_after:.2e}")
+            else:
+                # Standard Gram matrix computation without regularization
+                gram_matrices = compute_gram_matrices_from_activations(filtered_activations)
+                regularization_info = {}
+            
+            # 4. Use WhiteningProcessor for consistent whitening with eigenvalue preservation
+            whitening_info = {}
+            whitened_grams = {}
+            
+            logger.info("Computing whitening transformations using WhiteningProcessor")
+            
+            for node_id, K in gram_matrices.items():
+                # Use the whitening processor for this node
+                K_whitened, W, info = self.whitening_processor.whiten_gram_matrix(K)
                 
-                # 8. Create the final Sheaf object.
-                sheaf = Sheaf(
-                    poset=poset,
-                    stalks=stalks,
-                    restrictions=restrictions,
-                    eigenvalue_metadata=eigenvalue_metadata,
-                    metadata={
-                        'construction_method': 'fx_unified_whitened',
-                        'nodes': len(poset.nodes()),
-                        'edges': len(poset.edges()),
-                        'whitened': True,
-                        'gram_regularized': use_gram_regularization,
-                        'regularization_info': regularization_info if use_gram_regularization else None,
-                        'batch_size': input_tensor.shape[0],
-                        'whitening_info': whitening_info,
-                        'stalk_ranks': {node_id: info['rank'] for node_id, info in whitening_info.items()},
-                        'traced_model': traced_model,
-                        'module_types': module_types,
-                        'preserve_eigenvalues': use_eigenvalues
-                    }
-                )
+                whitening_info[node_id] = {
+                    'whitening_matrix': W,
+                    'eigenvalues': info['eigenvalues'],
+                    'eigenvectors': info.get('eigenvectors'),
+                    'rank': info['effective_rank'],  # Use effective_rank from WhiteningProcessor
+                    'eigenvalue_diagonal': info.get('eigenvalue_diagonal'),
+                    'preserve_eigenvalues': use_eigenvalues,  # Use runtime value, not self.preserve_eigenvalues
+                    'condition_number': info.get('condition_number', 1.0),
+                    'regularized': info.get('regularized', False)
+                }
+                whitened_grams[node_id] = K_whitened
+                logger.debug(f"Node {node_id}: whitened with rank={info['effective_rank']}, W.shape={W.shape}")
+            
+            # 5. Define stalks based on whitening results
+            stalks = {}
+            for node_id, info in whitening_info.items():
+                rank = info['rank']
                 
-                # 8. Validate the sheaf's mathematical properties.
-                if validate:
-                    validation_results = validate_sheaf_properties(sheaf.restrictions, sheaf.poset)
-                    sheaf.metadata['validation'] = validation_results
-                    sheaf.metadata['is_valid'] = validation_results['valid_sheaf']
-                
-                logger.info("Sheaf construction complete.")
-                return sheaf
+                if use_eigenvalues and 'eigenvalue_diagonal' in info and info['eigenvalue_diagonal'] is not None:
+                    # Use eigenvalue diagonal matrix as stalk
+                    stalks[node_id] = info['eigenvalue_diagonal']
+                    logger.debug(f"Created eigenvalue stalk for {node_id}: {stalks[node_id].shape}")
+                else:
+                    # Use identity matrix as stalk (standard whitening)
+                    stalks[node_id] = torch.eye(int(rank), dtype=torch.float32)
+                    logger.debug(f"Created identity stalk for {node_id}: {stalks[node_id].shape}")
+            
+            # 6. Compute restriction maps using eigenvalue-aware algorithm selection
+            # This ensures dimensional consistency between stalks and restrictions
+            # and uses weighted Procrustes when eigenvalue preservation is enabled
+            restrictions = self.restriction_manager.compute_restrictions_with_eigenvalues(
+                gram_matrices, 
+                whitening_info,
+                poset,
+                preserve_eigenvalues=use_eigenvalues,
+                validate=validate,
+                regularization_info=regularization_info if use_gram_regularization else None
+            )
+            
+            # 7. Create module type mapping for visualization
+            module_types = {}
+            if traced_model is not None:
+                try:
+                    for node_id in poset.nodes():
+                        node_attrs = poset.nodes[node_id]
+                        if node_attrs.get('op') == 'call_module':
+                            target = node_attrs.get('target', '')
+                            try:
+                                module = traced_model.get_submodule(target)
+                                module_types[node_id] = type(module)
+                                module_types[target] = type(module)  # Also store by target
+                            except:
+                                pass
+                except Exception as e:
+                    logger.debug(f"Could not extract module types: {e}")
+            
+            # 7. Extract eigenvalue metadata if eigenvalue preservation is enabled
+            eigenvalue_metadata = None
+            if use_eigenvalues:
+                eigenvalue_metadata = self._extract_eigenvalue_metadata(whitening_info)
+            
+            # 8. Create the final Sheaf object.
+            sheaf = Sheaf(
+                poset=poset,
+                stalks=stalks,
+                restrictions=restrictions,
+                eigenvalue_metadata=eigenvalue_metadata,
+                metadata={
+                    'construction_method': 'fx_unified_whitened',
+                    'nodes': len(poset.nodes()),
+                    'edges': len(poset.edges()),
+                    'whitened': True,
+                    'gram_regularized': use_gram_regularization,
+                    'regularization_info': regularization_info if use_gram_regularization else None,
+                    'batch_size': input_tensor.shape[0],
+                    'whitening_info': whitening_info,
+                    'stalk_ranks': {node_id: info['rank'] for node_id, info in whitening_info.items()},
+                    'traced_model': traced_model,
+                    'module_types': module_types,
+                    'preserve_eigenvalues': use_eigenvalues
+                }
+            )
+            
+            # 8. Validate the sheaf's mathematical properties.
+            if validate:
+                validation_results = validate_sheaf_properties(sheaf.restrictions, sheaf.poset)
+                sheaf.metadata['validation'] = validation_results
+                sheaf.metadata['is_valid'] = validation_results['valid_sheaf']
+            
+            logger.info("Procrustes sheaf construction complete.")
+            return sheaf
 
-            except Exception as e:
-                logger.error(f"Sheaf construction failed: {e}", exc_info=True)
-                raise RuntimeError(f"Sheaf building failed due to: {e}")
+        except Exception as e:
+            logger.error(f"Procrustes sheaf construction failed: {e}", exc_info=True)
+            raise RuntimeError(f"Procrustes sheaf building failed due to: {e}")
+            
+        finally:
+            # Restore original whitening processor setting
+            self.whitening_processor.preserve_eigenvalues = original_preserve_eigenvalues
+    
+    def _build_gw_sheaf(self,
+                       model: nn.Module, 
+                       input_tensor: torch.Tensor,
+                       validate: bool = True,
+                       gw_config: Optional['GWConfig'] = None) -> Sheaf:
+        """Build sheaf using Gromov-Wasserstein optimal transport method.
+        
+        This method implements the GW-based sheaf construction pipeline:
+        1. Extracts activations using FX-based method
+        2. Extracts network structure (poset)  
+        3. Computes GW restriction maps directly from activations
+        4. Creates identity-based stalks (no whitening needed for GW)
+        5. Assembles final sheaf with GW-specific metadata
+        
+        Args:
+            model: PyTorch model to analyze
+            input_tensor: Example input for forward pass
+            validate: Whether to validate quasi-sheaf properties
+            gw_config: GW configuration (uses defaults if None)
+            
+        Returns:
+            Sheaf object with GW-based restrictions and metadata
+        """
+        logger.info("Building GW sheaf using optimal transport")
+        
+        try:
+            # Import GW components (lazy loading to avoid circular imports)
+            from ..core import GWConfig
+            from .gw_builder import GWRestrictionManager
+            
+            # Use provided config or create default
+            if gw_config is None:
+                gw_config = GWConfig()
+            else:
+                # Ensure config is valid
+                gw_config.validate()
+            
+            # 1. Extract activations using FX-based method
+            logger.info("Extracting activations using FX tracer")
+            activations = extract_activations_fx(model, input_tensor)
+            
+            # 2. Extract poset filtered by available activations
+            available_activations = set(activations.keys())
+            poset, traced_model = self.poset_extractor.extract_activation_filtered_poset(model, available_activations)
+            
+            # Filter activations to only those nodes present in final poset
+            poset_nodes = set(poset.nodes())
+            filtered_activations = {k: v for k, v in activations.items() if k in poset_nodes}
+            
+            logger.info(f"GW sheaf construction: {len(filtered_activations)} nodes, {len(poset.edges())} edges")
+            
+            # 3. Initialize GW restriction manager
+            if self._gw_restriction_manager is None:
+                self._gw_restriction_manager = GWRestrictionManager(config=gw_config)
+            
+            # 4. Compute all GW restriction maps
+            logger.info("Computing GW restriction maps")
+            restrictions, gw_costs, gw_metadata = self._gw_restriction_manager.compute_all_restrictions(
+                filtered_activations, poset, parallel=True
+            )
+            
+            # 5. Create Gram matrix-based stalks (proper sheaf construction)
+            # Stalks are cosine similarity matrices computed from activations
+            stalks = {}
+            stalk_dimensions = {}
+            
+            for node_name, activation_tensor in filtered_activations.items():
+                # Flatten activation if needed to get feature vectors
+                if activation_tensor.dim() > 2:
+                    activation_tensor_flat = activation_tensor.view(activation_tensor.shape[0], -1)
+                else:
+                    activation_tensor_flat = activation_tensor
                 
-            finally:
-                # Restore original whitening processor setting
-                self.whitening_processor.preserve_eigenvalues = original_preserve_eigenvalues
+                # Handle zero vectors to avoid numerical issues
+                norms = torch.norm(activation_tensor_flat, dim=1, keepdim=True)
+                zero_mask = norms < 1e-10
+                if torch.any(zero_mask):
+                    logger.warning(f"Found {zero_mask.sum()} zero vectors in {node_name}, adding small noise")
+                    activation_tensor_flat = activation_tensor_flat.clone()
+                    activation_tensor_flat[zero_mask.squeeze()] += 1e-8 * torch.randn_like(activation_tensor_flat[zero_mask.squeeze()])
+                
+                # Compute cosine similarity matrix (Gram matrix of normalized vectors)
+                # This creates the proper stalks for sheaf construction
+                import torch.nn.functional as F
+                X_normalized = F.normalize(activation_tensor_flat, p=2, dim=1)
+                K = X_normalized @ X_normalized.T
+                
+                n_samples = activation_tensor_flat.shape[0]
+                stalks[node_name] = K
+                stalk_dimensions[node_name] = n_samples
+                
+                logger.debug(f"Created Gram matrix stalk for {node_name}: {n_samples}×{n_samples}, "
+                           f"eigenvalue range: [{K.min():.6f}, {K.max():.6f}]")
+            
+            # 6. Create module type mapping for visualization  
+            module_types = {}
+            if traced_model is not None:
+                try:
+                    for node_id in poset.nodes():
+                        node_attrs = poset.nodes[node_id]
+                        if node_attrs.get('op') == 'call_module':
+                            target = node_attrs.get('target', '')
+                            try:
+                                module = traced_model.get_submodule(target)
+                                module_types[node_id] = type(module)
+                                module_types[target] = type(module)
+                            except:
+                                pass
+                except Exception as e:
+                    logger.debug(f"Could not extract module types: {e}")
+            
+            # 7. Create comprehensive GW metadata
+            sheaf_metadata = {
+                'construction_method': 'gromov_wasserstein',
+                'nodes': len(poset.nodes()),
+                'edges': len(poset.edges()),
+                'whitened': False,  # GW doesn't use whitening
+                'batch_size': input_tensor.shape[0],
+                'stalk_dimensions': stalk_dimensions,
+                'traced_model': traced_model,
+                'module_types': module_types,
+                'preserve_eigenvalues': False,  # Not applicable for GW
+                
+                # GW-specific metadata
+                'gw_config': gw_config.to_dict(),
+                'gw_costs': gw_costs,
+                'gw_couplings': gw_metadata.get('gw_couplings', {}),
+                'computation_time': gw_metadata.get('computation_time', 0.0),
+                'num_edges_succeeded': gw_metadata.get('num_edges_succeeded', 0),
+                'num_edges_failed': gw_metadata.get('num_edges_failed', 0),
+                'failed_edges': gw_metadata.get('failed_edges', []),
+                'parallel_processing': gw_metadata.get('parallel_processing', False),
+                'validation_report': gw_metadata.get('validation_report', None),
+                
+                # Edge weight metadata for spectral analysis
+                'edge_weight_type': 'metric_distortion',  # vs 'correlation' for Procrustes
+                'filtration_semantics': 'increasing',     # vs 'decreasing' for Procrustes
+                'quasi_sheaf_tolerance': gw_config.quasi_sheaf_tolerance
+            }
+            
+            # 8. Create the GW Sheaf object
+            sheaf = Sheaf(
+                poset=poset,
+                stalks=stalks,
+                restrictions=restrictions,
+                eigenvalue_metadata=None,  # Not applicable for GW
+                metadata=sheaf_metadata
+            )
+            
+            # 9. Validation (optional)
+            if validate:
+                validation_report = gw_metadata.get('validation_report')
+                if validation_report is not None:
+                    sheaf.metadata['quasi_sheaf_valid'] = validation_report['satisfies_quasi_sheaf']
+                    sheaf.metadata['max_functoriality_violation'] = validation_report['max_violation']
+                    
+                    if not validation_report['satisfies_quasi_sheaf']:
+                        logger.warning(f"Quasi-sheaf validation failed: max_violation="
+                                     f"{validation_report['max_violation']:.2e} > {gw_config.quasi_sheaf_tolerance}")
+                    else:
+                        logger.info(f"Quasi-sheaf validation passed: max_violation="
+                                   f"{validation_report['max_violation']:.2e} ≤ {gw_config.quasi_sheaf_tolerance}")
+            
+            # Log success statistics
+            success_rate = gw_metadata.get('num_edges_succeeded', 0) / max(len(poset.edges()), 1)
+            logger.info(f"GW sheaf construction complete: {len(restrictions)} restrictions, "
+                       f"success_rate={success_rate:.1%}, time={gw_metadata.get('computation_time', 0):.2f}s")
+            
+            return sheaf
+            
+        except Exception as e:
+            logger.error(f"GW sheaf construction failed: {e}", exc_info=True)
+            raise RuntimeError(f"GW sheaf building failed: {e}")
 
     def build_from_graph(self, 
                         graph: nx.Graph, 

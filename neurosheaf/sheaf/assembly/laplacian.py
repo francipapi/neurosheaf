@@ -67,9 +67,9 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import networkx as nx
 
-# Simple logging setup for this module
-import logging
-logger = logging.getLogger(__name__)
+# Use project's logging setup for consistency
+from ...utils.logging import setup_logger
+logger = setup_logger(__name__)
 
 from ..data_structures import Sheaf
 
@@ -126,11 +126,17 @@ class SheafLaplacianBuilder:
         self.regularization = regularization
     
     def build(self, sheaf: Sheaf, edge_weights: Optional[Dict[Tuple[str, str], float]] = None) -> Tuple[csr_matrix, LaplacianMetadata]:
-        """Build the sparse sheaf Laplacian with optimized performance.
+        """Build the sparse sheaf Laplacian with method-specific routing.
+        
+        Automatically detects the construction method and routes to appropriate
+        Laplacian construction approach:
+        - GW sheaves: Use GW-specific block assembly
+        - Eigenvalue-preserving: Use Hodge formulation
+        - Standard: Use optimized general formulation
         
         Args:
-            sheaf: Sheaf object with whitened stalks and restrictions
-            edge_weights: Optional edge weights. If None, uses Frobenius norm of restrictions
+            sheaf: Sheaf object with stalks and restrictions
+            edge_weights: Optional edge weights. If None, uses method-appropriate defaults
             
         Returns:
             Tuple of (sparse_laplacian, metadata)
@@ -142,43 +148,114 @@ class SheafLaplacianBuilder:
         process = psutil.Process()
         initial_memory = process.memory_info().rss
         
-        logger.info(f"Building optimized Laplacian for {len(sheaf.stalks)} nodes, {len(sheaf.restrictions)} edges")
+        logger.info(f"Building Laplacian for {len(sheaf.stalks)} nodes, {len(sheaf.restrictions)} edges")
         
         try:
-            # Initialize metadata
-            metadata = self._initialize_metadata(sheaf)
-            
-            # Set default edge weights to Frobenius norm if not provided
-            if edge_weights is None:
-                edge_weights = self._compute_default_edge_weights(sheaf)
-            
-            # Build Laplacian using appropriate method based on eigenvalue preservation
-            if self._uses_eigenvalue_preservation(sheaf):
+            # Route to appropriate construction method
+            if sheaf.is_gw_sheaf():
+                logger.info("Detected GW sheaf, using GW-specific Laplacian construction")
+                return self._build_gw_laplacian(sheaf, edge_weights)
+            elif self._uses_eigenvalue_preservation(sheaf):
                 logger.info("Detected eigenvalue-preserving sheaf, using Hodge formulation")
-                laplacian = self._build_hodge_laplacian(sheaf, edge_weights, metadata)
+                return self._build_eigenvalue_preserving_laplacian(sheaf, edge_weights)
             else:
-                # Use existing standard implementation
-                laplacian = self._build_laplacian_optimized(sheaf, edge_weights, metadata)
-            
-            # Validate if requested
-            if self.validate_properties:
-                self._validate_laplacian(laplacian)
-            
-            # Update metadata
-            final_memory = process.memory_info().rss
-            metadata.construction_time = time.time() - start_time
-            metadata.memory_usage = (final_memory - initial_memory) / (1024**2)  # MB
-            metadata.num_nonzeros = laplacian.nnz
-            metadata.sparsity_ratio = 1.0 - (laplacian.nnz / (laplacian.shape[0] * laplacian.shape[1]))
-            
-            logger.info(f"Optimized Laplacian built: {laplacian.shape}, {laplacian.nnz} nnz, "
-                       f"{metadata.sparsity_ratio:.1%} sparse, {metadata.construction_time:.3f}s, "
-                       f"{metadata.memory_usage:.2f} MB")
-            
-            return laplacian, metadata
+                logger.info("Using standard Laplacian construction")
+                return self._build_standard_laplacian(sheaf, edge_weights)
             
         except Exception as e:
             raise LaplacianError(f"Laplacian construction failed: {e}")
+    
+    def _build_gw_laplacian(self, sheaf: Sheaf, edge_weights: Optional[Dict]) -> Tuple[csr_matrix, LaplacianMetadata]:
+        """Build Laplacian for GW-based sheaf using GW-specific assembly."""
+        # Lazy import to avoid circular dependencies
+        from .gw_laplacian import GWLaplacianBuilder, GWLaplacianMetadata
+        
+        # Create GW builder with same settings
+        gw_builder = GWLaplacianBuilder(
+            validate_properties=self.validate_properties,
+            sparsity_threshold=self.sparsity_threshold
+        )
+        
+        # Build using GW-specific method
+        laplacian = gw_builder.build_laplacian(sheaf, sparse=True)
+        
+        # Create GW metadata with sheaf reference (CRITICAL for filtration)
+        gw_metadata = gw_builder._initialize_gw_metadata(sheaf, edge_weights or gw_builder.extract_edge_weights(sheaf))
+        
+        # Update with sparse matrix properties
+        if hasattr(laplacian, 'nnz'):
+            gw_metadata.num_nonzeros = laplacian.nnz
+            total_entries = laplacian.shape[0] * laplacian.shape[1]
+            gw_metadata.sparsity_ratio = 1.0 - (laplacian.nnz / total_entries) if total_entries > 0 else 0.0
+        
+        logger.info(f"GW Laplacian built: {laplacian.shape}, {gw_metadata.num_nonzeros} nnz, "
+                   f"{gw_metadata.sparsity_ratio:.1%} sparse")
+        
+        # Return GWLaplacianMetadata directly (preserves sheaf reference for filtration)
+        return laplacian, gw_metadata
+    
+    def _build_eigenvalue_preserving_laplacian(self, sheaf: Sheaf, edge_weights: Optional[Dict]) -> Tuple[csr_matrix, LaplacianMetadata]:
+        """Build Laplacian for eigenvalue-preserving sheaf using Hodge formulation."""
+        start_time = time.time()
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss
+        
+        # Initialize metadata
+        metadata = self._initialize_metadata(sheaf)
+        
+        # Set default edge weights
+        if edge_weights is None:
+            edge_weights = self._compute_default_edge_weights(sheaf)
+        
+        # Use Hodge formulation
+        laplacian = self._build_hodge_laplacian(sheaf, edge_weights, metadata)
+        
+        # Validate if requested
+        if self.validate_properties:
+            self._validate_laplacian(laplacian)
+        
+        # Update metadata
+        final_memory = process.memory_info().rss
+        metadata.construction_time = time.time() - start_time
+        metadata.memory_usage = (final_memory - initial_memory) / (1024**2)
+        metadata.num_nonzeros = laplacian.nnz
+        metadata.sparsity_ratio = 1.0 - (laplacian.nnz / (laplacian.shape[0] * laplacian.shape[1]))
+        
+        logger.info(f"Eigenvalue-preserving Laplacian built: {laplacian.shape}, {laplacian.nnz} nnz")
+        
+        return laplacian, metadata
+    
+    def _build_standard_laplacian(self, sheaf: Sheaf, edge_weights: Optional[Dict]) -> Tuple[csr_matrix, LaplacianMetadata]:
+        """Build Laplacian for standard sheaf using optimized general formulation."""
+        start_time = time.time()
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss
+        
+        # Initialize metadata
+        metadata = self._initialize_metadata(sheaf)
+        
+        # Set default edge weights
+        if edge_weights is None:
+            edge_weights = self._compute_default_edge_weights(sheaf)
+        
+        # Use standard optimized implementation
+        laplacian = self._build_laplacian_optimized(sheaf, edge_weights, metadata)
+        
+        # Validate if requested
+        if self.validate_properties:
+            self._validate_laplacian(laplacian)
+        
+        # Update metadata
+        final_memory = process.memory_info().rss
+        metadata.construction_time = time.time() - start_time
+        metadata.memory_usage = (final_memory - initial_memory) / (1024**2)
+        metadata.num_nonzeros = laplacian.nnz
+        metadata.sparsity_ratio = 1.0 - (laplacian.nnz / (laplacian.shape[0] * laplacian.shape[1]))
+        
+        logger.info(f"Standard Laplacian built: {laplacian.shape}, {laplacian.nnz} nnz, "
+                   f"{metadata.sparsity_ratio:.1%} sparse, {metadata.construction_time:.3f}s")
+        
+        return laplacian, metadata
     
     def _initialize_metadata(self, sheaf: Sheaf) -> LaplacianMetadata:
         """Initialize metadata from sheaf structure."""

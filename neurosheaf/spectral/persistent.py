@@ -117,9 +117,9 @@ class PersistentSpectralAnalyzer:
                 sheaf, filtration_type, n_steps, param_range
             )
             
-            # Create edge threshold function
+            # Create edge threshold function with construction method awareness
             edge_threshold_func = self._create_edge_threshold_func(
-                filtration_type, custom_threshold_func
+                filtration_type, custom_threshold_func, sheaf
             )
             
             # Compute persistence using static Laplacian with masking
@@ -130,11 +130,22 @@ class PersistentSpectralAnalyzer:
             # Extract persistence features
             features = self._extract_persistence_features(persistence_result)
             
-            # Generate persistence diagrams
+            # Get construction method for proper persistence interpretation
+            construction_method = sheaf.metadata.get('construction_method', 'standard')
+            
+            # Generate persistence diagrams with construction method awareness
             diagrams = self._generate_persistence_diagrams(
                 persistence_result['tracking_info'],
                 filtration_params,
-                filtration_type
+                filtration_type,
+                construction_method
+            )
+            
+            # Validate filtration semantics for mathematical correctness
+            semantic_validation = self._validate_filtration_semantics(
+                persistence_result['eigenvalue_sequences'], 
+                filtration_params, 
+                construction_method
             )
             
             # Create analysis metadata
@@ -145,7 +156,8 @@ class PersistentSpectralAnalyzer:
                 'n_eigenvalue_sequences': len(persistence_result['eigenvalue_sequences']),
                 'n_filtration_steps': len(filtration_params),
                 'sheaf_nodes': len(sheaf.stalks),
-                'sheaf_edges': len(sheaf.restrictions)
+                'sheaf_edges': len(sheaf.restrictions),
+                'semantic_validation': semantic_validation
             }
             
             logger.info(f"Persistent spectral analysis completed in {analysis_time:.2f}s")
@@ -168,7 +180,7 @@ class PersistentSpectralAnalyzer:
                                   filtration_type: str,
                                   n_steps: int,
                                   param_range: Optional[Tuple[float, float]]) -> List[float]:
-        """Generate filtration parameter sequence.
+        """Generate filtration parameter sequence with GW awareness.
         
         Args:
             sheaf: Sheaf object
@@ -177,9 +189,194 @@ class PersistentSpectralAnalyzer:
             param_range: Parameter range (auto-detected if None)
             
         Returns:
-            List of filtration parameter values
+            List of filtration parameter values (always increasing)
         """
-        # Always calculate edge weights for threshold filtration
+        construction_method = sheaf.metadata.get('construction_method', 'standard')
+        
+        # Extract edge weights based on construction method
+        if construction_method == 'gromov_wasserstein':
+            edge_weights = self._generate_gw_filtration_params(sheaf, n_steps, param_range)
+            return edge_weights
+        else:
+            return self._generate_standard_filtration_params(sheaf, n_steps, param_range)
+    
+    def _generate_gw_filtration_params(self, 
+                                     sheaf: Sheaf,
+                                     n_steps: int, 
+                                     param_range: Optional[Tuple[float, float]]) -> List[float]:
+        """Generate INCREASING filtration for GW costs (typically in [0, 2] for cosine).
+        
+        GW Filtration Logic:
+        - Start with NO edges (only isolated stalks)
+        - Add edges with cost ≤ threshold as threshold increases
+        - Small costs = good matches = added first
+        - Results in INCREASING complexity (opposite of standard)
+        """
+        logger.info("Generating GW-aware filtration parameters")
+        
+        # Extract GW costs from metadata
+        gw_costs = sheaf.metadata.get('gw_costs', {})
+        if not gw_costs:
+            logger.warning("No GW costs found in metadata, computing from restrictions")
+            edge_weights = []
+            for edge, restriction in sheaf.restrictions.items():
+                # Use operator norm as proxy for GW distortion
+                weight = torch.linalg.norm(restriction, ord=2).item()
+                edge_weights.append(weight)
+        else:
+            edge_weights = list(gw_costs.values())
+            
+        
+        # Determine parameter range with improved resolution
+        if param_range is not None:
+            min_cost, max_cost = param_range
+            logger.info(f"Using user-provided GW cost range: [{min_cost:.4f}, {max_cost:.4f}]")
+        else:
+            if not edge_weights:
+                logger.warning("No edges found, using default GW range")
+                min_cost, max_cost = 0.0, 2.0
+            else:
+                min_weight = min(edge_weights)
+                max_weight = max(edge_weights)
+                
+                # CRITICAL FIX: Expand range for better filtration resolution
+                # Start significantly below minimum to capture progressive edge addition
+                weight_range = max_weight - min_weight
+                if weight_range > 0:
+                    # Use 20% margin below min and 10% above max for better coverage
+                    margin_below = max(0.2 * weight_range, 0.1 * min_weight, 0.01)
+                    margin_above = max(0.1 * weight_range, 0.05 * max_weight, 0.01)
+                    min_cost = max(0.0, min_weight - margin_below)  # Never negative
+                    max_cost = max_weight + margin_above
+                else:
+                    # All edges have same weight - create small range around it
+                    margin = max(0.1 * min_weight, 0.01)
+                    min_cost = max(0.0, min_weight - margin)
+                    max_cost = min_weight + margin
+                
+                logger.info(f"Auto-detected GW cost range: [{min_cost:.4f}, {max_cost:.4f}] "
+                           f"(expanded from edge range [{min_weight:.4f}, {max_weight:.4f}])")
+        
+        # Generate ADAPTIVE parameter sequence based on actual edge cost distribution
+        # This ensures each filtration step includes a different set of edges
+        if edge_weights:
+            # Sort edge weights to understand distribution (after perturbations)
+            sorted_weights = sorted(set(edge_weights))
+            unique_costs = len(sorted_weights)
+            
+            logger.info(f"Found {unique_costs} unique GW costs: {[f'{w:.6f}' for w in sorted_weights[:5]]}{'...' if unique_costs > 5 else ''}")
+            
+            if unique_costs >= n_steps:
+                # Use actual cost values as breakpoints for maximum distinctness
+                # Select n_steps costs that provide good coverage
+                indices = np.linspace(0, unique_costs - 1, n_steps, dtype=int)
+                params = [sorted_weights[i] for i in indices]
+                # Ensure we include the minimum (start with no edges)
+                if params[0] > min_cost:
+                    params[0] = min_cost
+                # Ensure we include beyond maximum (end with all edges)  
+                if params[-1] < max_cost:
+                    params[-1] = max_cost
+                logger.info("Using cost-based filtration parameters with high resolution")
+            elif unique_costs < len(edge_weights) * 0.7:
+                # Handle clustered costs with high-resolution uniform sampling
+                logger.info(f"Detected clustered costs ({unique_costs} unique), using fine-scale uniform sampling")
+                # Use very fine uniform sampling to capture transitions between cost clusters
+                params = np.linspace(min_cost, max_cost, n_steps).tolist()
+                logger.info("Using high-resolution uniform sampling for clustered costs")
+            else:
+                # Create parameters that ensure each step includes different edge sets
+                params = []
+                
+                # Start with minimal threshold to have only the smallest cost edge
+                if sorted_weights[0] > 0:
+                    params.append(sorted_weights[0] - 1e-12)  # Just below first edge
+                
+                # Add threshold for each unique edge cost to ensure progressive inclusion
+                for i, cost in enumerate(sorted_weights):
+                    # Add threshold slightly above this cost to include this edge
+                    params.append(cost + 1e-12)
+                    
+                    # Add intermediate points between this and next cost if space allows
+                    if i < len(sorted_weights) - 1 and len(params) < n_steps:
+                        next_cost = sorted_weights[i + 1]
+                        # Only add intermediate if there's significant gap
+                        if next_cost - cost > 2e-10:
+                            mid_point = (cost + next_cost) / 2
+                            params.append(mid_point)
+                
+                # Ensure we end beyond the maximum to include all edges
+                if params[-1] <= sorted_weights[-1]:
+                    params.append(max_cost)
+                
+                # Select best subset if we have too many parameters
+                if len(params) > n_steps:
+                    # Prioritize parameters that change edge inclusion count
+                    edge_counts = []
+                    for p in params:
+                        count = sum(1 for w in sorted_weights if w <= p)
+                        edge_counts.append(count)
+                    
+                    # Find parameters with unique edge counts
+                    unique_params = []
+                    seen_counts = set()
+                    for p, count in zip(params, edge_counts):
+                        if count not in seen_counts:
+                            unique_params.append(p)
+                            seen_counts.add(count)
+                    
+                    # If we still have too many, space them out evenly
+                    if len(unique_params) > n_steps:
+                        indices = np.linspace(0, len(unique_params) - 1, n_steps, dtype=int)
+                        params = [unique_params[i] for i in indices]
+                    else:
+                        params = unique_params
+                
+                logger.info("Using cost-transition based filtration parameters")
+        else:
+            # Fallback to uniform spacing if no edge weights
+            if min_cost > 0 and max_cost > min_cost * 10:
+                params = np.logspace(np.log10(min_cost), np.log10(max_cost), n_steps).tolist()
+                logger.info("Using log-scale filtration parameters (fallback)")
+            else:
+                params = np.linspace(min_cost, max_cost, n_steps).tolist()
+                logger.info("Using linear scale filtration parameters (fallback)")
+        
+        # Ensure parameters are sorted and deduplicated
+        params = sorted(list(set(params)))
+        
+        # If we ended up with fewer parameters than requested, fill gaps
+        while len(params) < n_steps:
+            # Find largest gap and insert midpoint
+            max_gap = 0
+            max_gap_idx = 0
+            for i in range(len(params) - 1):
+                gap = params[i + 1] - params[i]
+                if gap > max_gap:
+                    max_gap = gap
+                    max_gap_idx = i
+            
+            if max_gap > 1e-10:
+                mid_point = (params[max_gap_idx] + params[max_gap_idx + 1]) / 2
+                params.insert(max_gap_idx + 1, mid_point)
+            else:
+                break  # Cannot create more distinct parameters
+        
+        # Trim if we have too many
+        if len(params) > n_steps:
+            params = params[:n_steps]
+        
+        logger.info(f"Generated {len(params)} adaptive GW filtration parameters: "
+                   f"[{params[0]:.6f}, ..., {params[-1]:.6f}] (INCREASING complexity)")
+        
+        return params
+    
+    def _generate_standard_filtration_params(self, 
+                                           sheaf: Sheaf, 
+                                           n_steps: int,
+                                           param_range: Optional[Tuple[float, float]]) -> List[float]:
+        """Generate standard filtration parameters using Frobenius norms."""
+        # Calculate edge weights using Frobenius norms
         edge_weights = []
         for edge, restriction in sheaf.restrictions.items():
             weight = torch.norm(restriction, 'fro').item()
@@ -209,7 +406,8 @@ class PersistentSpectralAnalyzer:
                 
                 logger.info(f"Auto-detected parameter range from edge weights: [{param_range[0]:.4f}, {param_range[1]:.4f}]")
         
-        # Generate parameter sequence based on filtration type
+        # Generate parameter sequence based on filtration type (always threshold for this method)
+        filtration_type = 'threshold'  # Standard method always uses threshold
         if filtration_type == 'threshold':
             # MATHEMATICAL CORRECTION: Threshold filtration with increasing parameters
             # Start with minimum weight (many edges) and go up to maximum weight (few edges)
@@ -261,24 +459,37 @@ class PersistentSpectralAnalyzer:
     
     def _create_edge_threshold_func(self,
                                    filtration_type: str,
-                                   custom_func: Optional[Callable] = None) -> Callable:
-        """Create edge threshold function based on filtration type.
+                                   custom_func: Optional[Callable] = None,
+                                   sheaf: Optional[Sheaf] = None) -> Callable:
+        """Create edge threshold function based on filtration type and construction method.
         
         Args:
             filtration_type: Type of filtration
             custom_func: Custom threshold function (used if filtration_type='custom')
+            sheaf: Sheaf object for construction method detection
             
         Returns:
             Function with signature (edge_weight, param) -> bool
         """
+        # Detect construction method for appropriate threshold semantics
+        construction_method = sheaf.metadata.get('construction_method', 'standard') if sheaf else 'standard'
+        
         if filtration_type == 'threshold':
-            # Decreasing complexity filtration: start with many edges, gradually remove low-weight edges
-            # Keep edges with weight >= parameter
-            # As parameter increases, fewer edges are kept (decreasing complexity)
-            return lambda weight, param: weight >= param
+            if construction_method == 'gromov_wasserstein':
+                # GW: Increasing complexity filtration
+                # Include edges with cost ≤ threshold (small costs = good matches = added first)
+                # As parameter increases, more edges are included (increasing complexity)
+                logger.debug("Using GW threshold function: weight <= param (increasing complexity)")
+                return lambda weight, param: weight <= param
+            else:
+                # Standard: Decreasing complexity filtration
+                # Keep edges with weight >= parameter (large weights = strong connections = kept longest)
+                # As parameter increases, fewer edges are kept (decreasing complexity)
+                logger.debug("Using standard threshold function: weight >= param (decreasing complexity)")
+                return lambda weight, param: weight >= param
         
         elif filtration_type == 'cka_based':
-            # CKA-based: normalize by maximum weight then threshold
+            # CKA-based always uses standard semantics (higher correlation = keep longer)
             return lambda weight, param: weight >= param
         
         elif filtration_type == 'custom':
@@ -381,7 +592,8 @@ class PersistentSpectralAnalyzer:
     def _generate_persistence_diagrams(self,
                                      tracking_info: Dict,
                                      filtration_params: List[float],
-                                     filtration_type: str = 'threshold') -> Dict:
+                                     filtration_type: str = 'threshold',
+                                     construction_method: str = 'standard') -> Dict:
         """Generate persistence diagrams from continuous path tracking.
         
         MATHEMATICAL CORRECTION: Uses proper continuous eigenvalue paths instead of 
@@ -406,9 +618,15 @@ class PersistentSpectralAnalyzer:
             'path_based_computation': True  # Flag indicating correct method
         }
         
-        # MATHEMATICAL CORRECTION: Threshold filtration is always increasing in complexity
-        # No special birth/death swapping needed regardless of parameter ordering
-        is_decreasing = False
+        # MATHEMATICAL CORRECTION: Handle different construction method semantics
+        # GW construction: increasing parameters = increasing complexity
+        # Standard construction: increasing parameters = decreasing complexity
+        is_gw_construction = construction_method == 'gromov_wasserstein'
+        
+        if is_gw_construction:
+            logger.info("Using GW-specific persistence semantics (increasing complexity)")
+        else:
+            logger.debug("Using standard persistence semantics (decreasing complexity)")
         
         # Use the mathematically correct continuous paths from tracker
         if 'continuous_paths' in tracking_info:
@@ -417,11 +635,26 @@ class PersistentSpectralAnalyzer:
             
             for path in continuous_paths:
                 if path['death_param'] is not None:
-                    # Finite persistence pair - use standard increasing filtration semantics
-                    birth = path['birth_param']
-                    death = path['death_param']
+                    # Finite persistence pair - handle construction method semantics
+                    raw_birth = path['birth_param']
+                    raw_death = path['death_param']
                     birth_step = path['birth_step']
                     death_step = path['death_step']
+                    
+                    # CRITICAL FIX: Apply correct semantics based on construction method
+                    if is_gw_construction:
+                        # GW semantics: increasing parameters = increasing complexity
+                        # A feature "born" at low param (sparse) "dies" at high param (connected)
+                        # This matches the mathematical expectation: sparse → many components → connected
+                        birth = raw_birth  # Keep original: small param = birth
+                        death = raw_death  # Keep original: large param = death
+                        logger.debug(f"GW semantics: birth={birth:.6f} (sparse), death={death:.6f} (connected)")
+                    else:
+                        # Standard semantics: increasing parameters = decreasing complexity  
+                        # A feature "born" at low param (dense) "dies" at high param (sparse)
+                        birth = raw_birth
+                        death = raw_death
+                        logger.debug(f"Standard semantics: birth={birth:.6f}, death={death:.6f}")
                     
                     # Calculate lifetime and validate
                     lifetime = abs(death - birth)
@@ -863,6 +1096,117 @@ class PersistentSpectralAnalyzer:
                 similarities.append(similarity)
         
         return np.mean(similarities) if similarities else 0.0
+    
+    def _validate_filtration_semantics(self, 
+                                     eigenvalue_sequences: List[torch.Tensor], 
+                                     filtration_params: List[float],
+                                     construction_method: str) -> Dict:
+        """Validate that filtration produces expected eigenvalue progression.
+        
+        Args:
+            eigenvalue_sequences: List of eigenvalue tensors for each filtration step
+            filtration_params: Filtration parameter values
+            construction_method: Construction method ('gromov_wasserstein' or 'standard')
+            
+        Returns:
+            Dictionary with validation results and diagnostics
+        """
+        validation = {
+            'construction_method': construction_method,
+            'is_valid': True,
+            'warnings': [],
+            'statistics': {}
+        }
+        
+        if len(eigenvalue_sequences) < 2:
+            validation['warnings'].append("Too few filtration steps for semantic validation")
+            return validation
+            
+        try:
+            # Count non-zero eigenvalues at each step (above threshold)
+            eigenvalue_threshold = 1e-10
+            non_zero_counts = []
+            mean_eigenvalues = []
+            
+            for i, eigenvals in enumerate(eigenvalue_sequences):
+                if len(eigenvals) > 0:
+                    non_zero_count = torch.sum(eigenvals > eigenvalue_threshold).item()
+                    mean_eigenval = torch.mean(eigenvals[eigenvals > eigenvalue_threshold]).item() if non_zero_count > 0 else 0.0
+                else:
+                    non_zero_count = 0
+                    mean_eigenval = 0.0
+                    
+                non_zero_counts.append(non_zero_count)
+                mean_eigenvalues.append(mean_eigenval)
+            
+            # Store statistics
+            validation['statistics'] = {
+                'non_zero_counts': non_zero_counts,
+                'mean_eigenvalues': mean_eigenvalues,
+                'early_step_count': non_zero_counts[0] if non_zero_counts else 0,
+                'late_step_count': non_zero_counts[-1] if non_zero_counts else 0,
+                'early_step_mean': mean_eigenvalues[0] if mean_eigenvalues else 0.0,
+                'late_step_mean': mean_eigenvalues[-1] if mean_eigenvalues else 0.0
+            }
+            
+            # Validation logic depends on construction method
+            if construction_method == 'gromov_wasserstein':
+                # GW: Increasing complexity → Early steps should have MORE small eigenvalues
+                # Early params (sparse) → many disconnected components → many small eigenvalues
+                # Late params (dense) → fewer components → fewer, larger eigenvalues
+                expected_early_more_eigenvals = non_zero_counts[0] >= non_zero_counts[-1]
+                expected_early_smaller_mean = mean_eigenvalues[0] <= mean_eigenvalues[-1] * 2  # Allow some flexibility
+                
+                if not expected_early_more_eigenvals:
+                    validation['warnings'].append(
+                        f"GW semantics: Expected early step ({filtration_params[0]:.4f}) to have ≥ eigenvalues than late step ({filtration_params[-1]:.4f}), "
+                        f"but got {non_zero_counts[0]} vs {non_zero_counts[-1]}")
+                    validation['is_valid'] = False
+                
+                if not expected_early_smaller_mean and mean_eigenvalues[0] > 0 and mean_eigenvalues[-1] > 0:
+                    validation['warnings'].append(
+                        f"GW semantics: Expected early step to have smaller mean eigenvalue, "
+                        f"but got {mean_eigenvalues[0]:.6f} vs {mean_eigenvalues[-1]:.6f}")
+                
+                logger.info(f"GW semantic validation: Early step {non_zero_counts[0]} eigenvalues (mean={mean_eigenvalues[0]:.6f}), "
+                           f"Late step {non_zero_counts[-1]} eigenvalues (mean={mean_eigenvalues[-1]:.6f})")
+                
+            else:
+                # Standard: Decreasing complexity → Early steps should have FEWER large eigenvalues  
+                # Early params (dense) → fewer components → fewer, larger eigenvalues
+                # Late params (sparse) → many components → many small eigenvalues
+                expected_early_fewer_eigenvals = non_zero_counts[0] <= non_zero_counts[-1]
+                expected_early_larger_mean = mean_eigenvalues[0] >= mean_eigenvalues[-1] * 0.5  # Allow some flexibility
+                
+                if not expected_early_fewer_eigenvals:
+                    validation['warnings'].append(
+                        f"Standard semantics: Expected early step to have ≤ eigenvalues than late step, "
+                        f"but got {non_zero_counts[0]} vs {non_zero_counts[-1]}")
+                
+                if not expected_early_larger_mean and mean_eigenvalues[0] > 0 and mean_eigenvalues[-1] > 0:
+                    validation['warnings'].append(
+                        f"Standard semantics: Expected early step to have larger mean eigenvalue, "
+                        f"but got {mean_eigenvalues[0]:.6f} vs {mean_eigenvalues[-1]:.6f}")
+                
+                logger.debug(f"Standard semantic validation: Early step {non_zero_counts[0]} eigenvalues (mean={mean_eigenvalues[0]:.6f}), "
+                            f"Late step {non_zero_counts[-1]} eigenvalues (mean={mean_eigenvalues[-1]:.6f})")
+            
+            # General sanity checks
+            if all(count == 0 for count in non_zero_counts):
+                validation['warnings'].append("All filtration steps have zero eigenvalues - possible regularization or numerical issue")
+                validation['is_valid'] = False
+            
+            if len(validation['warnings']) == 0:
+                logger.info(f"✅ Filtration semantic validation passed for {construction_method} construction")
+            else:
+                logger.warning(f"⚠️ Filtration semantic validation found {len(validation['warnings'])} issues")
+                
+        except Exception as e:
+            validation['warnings'].append(f"Semantic validation failed: {e}")
+            validation['is_valid'] = False
+            logger.error(f"Semantic validation error: {e}")
+        
+        return validation
     
     def _create_similarity_rankings(self, distance_matrix: np.ndarray) -> List[Dict]:
         """Create ranked similarity results from distance matrix."""

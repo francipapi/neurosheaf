@@ -22,6 +22,7 @@ the Laplacian using only active edges, following the correct formula:
 
 import torch
 import numpy as np
+import logging
 from typing import Dict, List, Optional, Tuple, Union, Callable
 from scipy.sparse import csr_matrix, coo_matrix
 from scipy.sparse.linalg import lobpcg, eigsh
@@ -106,9 +107,9 @@ class UnifiedStaticLaplacian:
     def __init__(self,
                  laplacian_builder: Optional[SheafLaplacianBuilder] = None,
                  eigenvalue_method: str = 'auto',
-                 max_eigenvalues: int = 200,
+                 max_eigenvalues: int = 100,
                  enable_gpu: bool = True,
-                 enable_caching: bool = True,
+                 enable_caching: bool = False,
                  validate_properties: bool = False,
                  use_double_precision: bool = False):
         """Initialize UnifiedStaticLaplacian.
@@ -229,6 +230,9 @@ class UnifiedStaticLaplacian:
             from .tracker import SubspaceTracker
             tracker = SubspaceTracker()
             
+            # Detect construction method to route to appropriate tracking logic
+            construction_method = sheaf.metadata.get('construction_method', 'standard')
+            
             # MATHEMATICAL CLARIFICATION: Filtration semantics for threshold filtration
             # With threshold function (weight >= param) and increasing parameters:
             # - Higher parameters → fewer edges kept → decreasing complexity
@@ -240,7 +244,8 @@ class UnifiedStaticLaplacian:
             tracking_info = tracker.track_eigenspaces(
                 eigenvalue_sequences,
                 eigenvector_sequences,
-                filtration_params
+                filtration_params,
+                construction_method=construction_method
             )
             
             computation_time = time.time() - start_time
@@ -264,7 +269,7 @@ class UnifiedStaticLaplacian:
     def _get_or_build_laplacian(self, sheaf: Sheaf) -> Tuple[csr_matrix, LaplacianMetadata]:
         """Get cached Laplacian or build it if not cached."""
         if not self.enable_caching or self._cached_laplacian is None:
-            logger.debug("Building static Laplacian")
+            logger.info("Building static Laplacian")
             self._cached_laplacian, self._cached_metadata = self.laplacian_builder.build(sheaf)
             logger.info(f"Static Laplacian built: {self._cached_laplacian.shape}, "
                        f"{self._cached_laplacian.nnz:,} non-zeros")
@@ -287,38 +292,73 @@ class UnifiedStaticLaplacian:
     
     def _extract_edge_info(self, sheaf: Sheaf, laplacian: csr_matrix, 
                           metadata: LaplacianMetadata) -> Dict:
-        """Extract comprehensive edge information from sheaf and Laplacian."""
+        """Extract comprehensive edge information with GW awareness."""
         edge_info = {}
+        construction_method = sheaf.metadata.get('construction_method', 'standard')
         
         for edge in sheaf.restrictions.keys():
             source, target = edge
             restriction = sheaf.restrictions[edge]
             
-            # Compute edge weight using Frobenius norm
-            weight = torch.norm(restriction, 'fro').item()
+            # Extract edge weight based on construction method
+            if construction_method == 'gromov_wasserstein':
+                # GW sheaves: Use stored GW costs as weights
+                weight = self._compute_gw_edge_weight(restriction, sheaf, edge)
+            else:
+                # Standard sheaves: Use Frobenius norm
+                weight = torch.norm(restriction, 'fro').item()
             
             edge_info[edge] = {
                 'restriction': restriction,
                 'restriction_matrix': restriction.detach().cpu().numpy(),
                 'weight': weight,
                 'source': source,
-                'target': target
+                'target': target,
+                'construction_method': construction_method
             }
             
             # Add matrix positions if available from metadata
             if hasattr(metadata, 'edge_positions') and edge in metadata.edge_positions:
                 edge_info[edge]['positions'] = metadata.edge_positions[edge]
         
-        # Log weight statistics
+        # Log weight statistics with method awareness
         weights = [info['weight'] for info in edge_info.values()]
         if weights:
             self.masking_metadata.weight_range = (min(weights), max(weights))
             self.masking_metadata.edge_weights = {edge: info['weight'] 
                                                 for edge, info in edge_info.items()}
-            logger.info(f"Edge weights: min={min(weights):.4f}, max={max(weights):.4f}, "
+            method_label = "GW costs" if construction_method == 'gromov_wasserstein' else "Frobenius norms"
+            logger.info(f"Edge weights ({method_label}): min={min(weights):.4f}, max={max(weights):.4f}, "
                        f"mean={np.mean(weights):.4f}")
         
         return edge_info
+    
+    def _compute_gw_edge_weight(self, restriction: torch.Tensor, 
+                               sheaf: Sheaf, edge: Tuple[str, str]) -> float:
+        """Extract GW cost as edge weight from sheaf metadata."""
+        # Primary source: stored GW costs from construction
+        gw_costs = sheaf.metadata.get('gw_costs', {})
+        if edge in gw_costs:
+            return gw_costs[edge]
+        
+        # Fallback: compute from restriction properties using operator norm
+        # This preserves the different scaling compared to Frobenius norm
+        return torch.linalg.norm(restriction, ord=2).item()
+    
+    def _create_edge_threshold_func(self, construction_method: str) -> Callable:
+        """Create appropriate threshold function based on construction method."""
+        if construction_method == 'gromov_wasserstein':
+            # GW: Include edges with cost ≤ threshold (increasing complexity)
+            # Small costs = good matches = added first
+            def gw_threshold(weight: float, param: float) -> bool:
+                return weight <= param
+            return gw_threshold
+        else:
+            # Standard: Include edges with weight ≥ threshold (decreasing complexity)  
+            # Large weights = strong connections = kept longest
+            def standard_threshold(weight: float, param: float) -> bool:
+                return weight >= param
+            return standard_threshold
     
     def _create_edge_mask(self, edge_info: Dict, filtration_param: float,
                          edge_threshold_func: Callable[[float, float], bool]) -> Dict[Tuple, bool]:
@@ -343,6 +383,9 @@ class UnifiedStaticLaplacian:
         (which destroys Laplacian structure), we reconstruct the Laplacian using
         only the active edges according to the correct general sheaf formulation.
         
+        For GW sheaves, this routes to GW-specific Laplacian construction.
+        For standard sheaves, uses the cached/from-scratch reconstruction.
+        
         Uses dynamic weight application strategy:
         - Cache stores unweighted structural components (R, R^T R, I)
         - Weights are applied dynamically at filtration time
@@ -352,17 +395,81 @@ class UnifiedStaticLaplacian:
         
         logger.debug(f"Applying correct masking with {len(active_edges)} active edges")
         
-        # Use cached edge contributions if available for efficiency
-        if self.enable_caching and self._edge_contributions:
-            # Store edge_info for dynamic weight application
-            self._current_edge_info = edge_info
-            filtered_laplacian = self._build_laplacian_from_cache(active_edges, laplacian.shape)
-            # Clear temporary reference
-            self._current_edge_info = None
-            return filtered_laplacian
+        # Check if this is a GW sheaf - need to route to GW-specific construction
+        construction_method = getattr(metadata, 'construction_method', 'unknown')
+        is_gw_sheaf = construction_method == 'gw_laplacian'
+        
+        logger.info(f"🔍 MASKING DEBUG: construction_method='{construction_method}', is_gw_sheaf={is_gw_sheaf}, active_edges={len(active_edges)}")
+        
+        if is_gw_sheaf:
+            # GW sheaves: rebuild using GW-specific Laplacian construction
+            logger.info(f"🔄 SUCCESS: Routing to GW-specific masking for {len(active_edges)} active edges")
+            return self._apply_gw_masking(edge_mask, edge_info, metadata)
         else:
-            # Fallback: rebuild from scratch (less efficient but always correct)
-            return self._build_laplacian_from_scratch(active_edges, edge_info, metadata, laplacian.shape)
+            # Standard sheaves: use cached/from-scratch reconstruction
+            # Use cached edge contributions if available for efficiency
+            if self.enable_caching and self._edge_contributions:
+                # Store edge_info for dynamic weight application
+                self._current_edge_info = edge_info
+                filtered_laplacian = self._build_laplacian_from_cache(active_edges, laplacian.shape)
+                # Clear temporary reference
+                self._current_edge_info = None
+                return filtered_laplacian
+            else:
+                # Fallback: rebuild from scratch (less efficient but always correct)
+                return self._build_laplacian_from_scratch(active_edges, edge_info, metadata, laplacian.shape)
+    
+    def _apply_gw_masking(self, edge_mask: Dict[Tuple, bool], edge_info: Dict, metadata: LaplacianMetadata) -> csr_matrix:
+        """Apply masking for GW sheaves by rebuilding with GW-specific construction.
+        
+        This method handles the critical case where GW sheaves need to be rebuilt
+        for each filtration step using the GW-specific Laplacian construction,
+        rather than trying to mask the existing Laplacian.
+        
+        Args:
+            edge_mask: Boolean mask indicating which edges to keep
+            edge_info: Edge information including weights
+            metadata: GW Laplacian metadata with sheaf reference
+            
+        Returns:
+            Filtered sparse Laplacian matrix
+        """
+        active_edges = [edge for edge, keep in edge_mask.items() if keep]
+        
+        logger.debug(f"Applying GW-specific masking: rebuilding Laplacian with {len(active_edges)} active edges")
+        
+        # Lazy import to avoid circular dependency
+        from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+        
+        # Retrieve sheaf from metadata (should be stored during initial construction)
+        if not hasattr(metadata, 'sheaf_reference') or metadata.sheaf_reference is None:
+            logger.error("GW masking requires sheaf reference in metadata")
+            raise RuntimeError("Cannot apply GW masking: missing sheaf reference")
+        
+        sheaf = metadata.sheaf_reference
+        
+        # Create GW builder with same settings as original
+        gw_builder = GWLaplacianBuilder(
+            validate_properties=False,  # Skip validation for performance
+            sparsity_threshold=1e-12
+        )
+        
+        # Build filtered Laplacian using only active edges with regularization
+        try:
+            filtered_laplacian = gw_builder.build_laplacian(
+                sheaf=sheaf,
+                sparse=True,
+                active_edges=active_edges,
+                add_regularization=True  # Always add regularization for filtration
+            )
+            
+            logger.info(f"🔥 GW REBUILD: Built new Laplacian {filtered_laplacian.shape}, {filtered_laplacian.nnz} nnz for {len(active_edges)} active edges")
+            return filtered_laplacian
+            
+        except Exception as e:
+            logger.error(f"GW masking failed: {e}")
+            # Fallback to generic reconstruction if GW fails
+            return self._build_laplacian_from_scratch(active_edges, edge_info, metadata, metadata.total_dimension)
     
     def _ensure_edge_contributions(self, sheaf: Sheaf, metadata: LaplacianMetadata):
         """Ensure edge contributions are pre-computed and cached."""
@@ -742,6 +849,12 @@ class UnifiedStaticLaplacian:
         """Compute eigenvalues using dense decomposition (fallback method)."""
         laplacian_dense = laplacian.toarray()
         
+        # DEBUG: Check if the dense conversion is losing information
+        if logger.isEnabledFor(logging.DEBUG):
+            nnz_sparse = laplacian.nnz
+            nnz_dense = np.count_nonzero(laplacian_dense)
+            logger.debug(f"Dense conversion: sparse nnz={nnz_sparse}, dense nnz={nnz_dense}")
+        
         # Use appropriate precision for eigenvalue computation
         if self.use_double_precision:
             laplacian_torch = torch.from_numpy(laplacian_dense.astype(np.float64)).double()
@@ -750,7 +863,38 @@ class UnifiedStaticLaplacian:
         
         try:
             eigenvals, eigenvecs = torch.linalg.eigh(laplacian_torch)
-            eigenvals = torch.clamp(eigenvals, min=0.0)
+            
+            # DEBUG: Log raw eigenvalues before processing
+            if logger.isEnabledFor(logging.DEBUG):
+                raw_min = torch.min(eigenvals).item()
+                raw_max = torch.max(eigenvals).item()
+                raw_positive_count = torch.sum(eigenvals > 1e-10).item()
+                logger.debug(f"Raw eigenvalues: min={raw_min:.2e}, max={raw_max:.2e}, positive>{1e-10}: {raw_positive_count}")
+            
+            # CRITICAL FIX: Preserve small positive eigenvalues while handling numerical noise
+            # The goal is to distinguish between true zeros (null space) and small positive values (spectral info)
+            
+            # Identify eigenvalues that are clearly numerical errors (very negative)
+            numerical_threshold = -1e-10
+            severely_negative = eigenvals < numerical_threshold
+            
+            # Clamp only the severely negative ones to zero
+            eigenvals = torch.where(severely_negative, torch.zeros_like(eigenvals), eigenvals)
+            
+            # For small negative values close to zero (-1e-10 to 0), take absolute value
+            # This preserves the spectral information while ensuring PSD property
+            small_negative = (eigenvals < 0) & (eigenvals >= numerical_threshold)
+            eigenvals = torch.where(small_negative, torch.abs(eigenvals), eigenvals)
+            
+            # DEBUG: Log processed eigenvalues
+            if logger.isEnabledFor(logging.DEBUG):
+                processed_min = torch.min(eigenvals).item()
+                processed_max = torch.max(eigenvals).item()
+                processed_positive_count = torch.sum(eigenvals > 1e-10).item()
+                logger.debug(f"Processed eigenvalues: min={processed_min:.2e}, max={processed_max:.2e}, positive>{1e-10}: {processed_positive_count}")
+            
+            logger.debug(f"Eigenvalue processing: {torch.sum(severely_negative).item()} severely negative clamped, "
+                        f"{torch.sum(small_negative).item()} small negative made positive")
             
             # Return appropriate number of smallest eigenvalues
             n = len(eigenvals)
