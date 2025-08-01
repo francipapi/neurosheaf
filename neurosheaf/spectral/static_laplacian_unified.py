@@ -111,7 +111,8 @@ class UnifiedStaticLaplacian:
                  enable_gpu: bool = True,
                  enable_caching: bool = False,
                  validate_properties: bool = False,
-                 use_double_precision: bool = False):
+                 use_double_precision: bool = False,
+                 force_dense_eigenvalues: bool = False):
         """Initialize UnifiedStaticLaplacian.
         
         Args:
@@ -122,6 +123,7 @@ class UnifiedStaticLaplacian:
             enable_caching: Whether to cache intermediate computations
             validate_properties: Whether to validate mathematical properties
             use_double_precision: Whether to use double precision for eigenvalue computations
+            force_dense_eigenvalues: Whether to force dense eigenvalue computation (overrides eigenvalue_method)
         """
         self.laplacian_builder = laplacian_builder or SheafLaplacianBuilder(
             validate_properties=validate_properties
@@ -132,6 +134,7 @@ class UnifiedStaticLaplacian:
         self.enable_caching = enable_caching
         self.validate_properties = validate_properties
         self.use_double_precision = use_double_precision
+        self.force_dense_eigenvalues = force_dense_eigenvalues
         
         # Caching infrastructure
         self._cached_laplacian = None
@@ -169,7 +172,8 @@ class UnifiedStaticLaplacian:
     def compute_persistence(self,
                            sheaf: Sheaf,
                            filtration_params: List[float],
-                           edge_threshold_func: Callable[[float, float], bool]) -> Dict:
+                           edge_threshold_func: Callable[[float, float], bool],
+                           construction_method: Optional[str] = None) -> Dict:
         """Compute persistence using mathematically correct edge masking.
         
         Args:
@@ -177,6 +181,7 @@ class UnifiedStaticLaplacian:
             filtration_params: List of filtration parameter values
             edge_threshold_func: Function that returns True if edge should be kept
                                 Signature: (edge_weight, filtration_param) -> bool
+            construction_method: Construction method used (if 'gromov_wasserstein', forces dense eigenvalues)
             
         Returns:
             Dictionary with persistence computation results:
@@ -189,6 +194,12 @@ class UnifiedStaticLaplacian:
         """
         logger.info(f"Computing persistence with {len(filtration_params)} filtration steps")
         start_time = time.time()
+        
+        # Force dense eigenvalue computation for GW construction (PES tracker requirement)
+        if construction_method == 'gromov_wasserstein':
+            if not self.force_dense_eigenvalues:
+                logger.info("Forcing dense eigenvalue computation for GW/PES tracker")
+                self.force_dense_eigenvalues = True
         
         try:
             # Build or retrieve cached Laplacian
@@ -227,11 +238,16 @@ class UnifiedStaticLaplacian:
                     logger.debug(f"Processed {i + 1}/{len(filtration_params)} filtration steps")
             
             # Track eigenspaces using SubspaceTracker for full persistence analysis
-            from .tracker import SubspaceTracker
-            tracker = SubspaceTracker()
+            from .tracker_factory import SubspaceTrackerFactory
             
             # Detect construction method to route to appropriate tracking logic
             construction_method = sheaf.metadata.get('construction_method', 'standard')
+            
+            # Create appropriate tracker based on construction method
+            tracker = SubspaceTrackerFactory.create_tracker(
+                construction_method=construction_method
+            )
+            logger.debug(f"Created {type(tracker).__name__} for construction method: {construction_method}")
             
             # MATHEMATICAL CLARIFICATION: Filtration semantics for threshold filtration
             # With threshold function (weight >= param) and increasing parameters:
@@ -241,11 +257,13 @@ class UnifiedStaticLaplacian:
             # - The parameter name 'increasing' refers to parameter ordering, not complexity
             filtration_direction = 'increasing'
             
+            # Pass sheaf metadata to tracker (critical for GW tracker)
             tracking_info = tracker.track_eigenspaces(
                 eigenvalue_sequences,
                 eigenvector_sequences,
                 filtration_params,
-                construction_method=construction_method
+                construction_method=construction_method,
+                sheaf_metadata=sheaf.metadata
             )
             
             computation_time = time.time() - start_time
@@ -704,7 +722,12 @@ class UnifiedStaticLaplacian:
     
     def _compute_eigenvalues(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues and eigenvectors with automatic method selection."""
-        if self.eigenvalue_method == 'auto':
+        
+        # Check if dense computation is forced (for PES tracker)
+        if self.force_dense_eigenvalues:
+            method = 'dense'
+            logger.debug(f"Forcing dense eigenvalue computation for PES tracker: {laplacian.shape[0]}×{laplacian.shape[0]}")
+        elif self.eigenvalue_method == 'auto':
             # Automatic method selection: prefer dense for reliability
             # Only use LOBPCG for very large matrices where memory becomes an issue
             if laplacian.shape[0] > 5000:

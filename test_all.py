@@ -4,6 +4,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from pathlib import Path
+# Core imports
+from neurosheaf.sheaf.core.gw_config import GWConfig
+from neurosheaf.sheaf.assembly.builder import SheafBuilder
+from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
+from neurosheaf.utils import load_model
+from neurosheaf.api import NeurosheafAnalyzer
+
+# NEW: GW Subspace Tracker imports
+from neurosheaf.spectral.gw.gw_subspace_tracker import GWSubspaceTracker
+from neurosheaf.spectral.tracker_factory import SubspaceTrackerFactory
+from neurosheaf.spectral.gw.pes_computation import PESComputer
+
 
 # Set environment for CPU usage
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
@@ -383,9 +395,16 @@ mlp_path1 = "models/torch_mlp_acc_0.9857_epoch_100.pth"
 rand_custom_path = "models/random_custom_net_000_default_seed_42.pth"
 rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
 
+gw_config = GWConfig(
+        epsilon=0.05,  # More accurate
+        max_iter=100, 
+        tolerance=1e-8,
+        quasi_sheaf_tolerance=0.08
+    )
+
 # Try to load MLP model first (simpler architecture)
 try:
-    mlp_model = load_model(MLPModel, mlp_path1, device="cpu")
+    mlp_model = load_model(ActualCustomModel, custom_path, device="cpu")
     print(f"✅ Successfully loaded MLP model with {sum(p.numel() for p in mlp_model.parameters()):,} parameters")
 except Exception as e:
     print(f"❌ Error loading MLP model: {e}")
@@ -399,14 +418,14 @@ if mlp_model is None:
 model = mlp_model
 
 # Generate sample data that matches your model's expected input (3D torus data)
-batch_size = 200
+batch_size = 50
 data = 8*torch.randn(batch_size, 3)  # 3 features input for torus data
 print(f"Generated data shape: {data.shape}")
 
 # Use the high-level API instead of direct sheaf building
 print("\n=== Building Sheaf Using High-Level API ===")
 analyzer = NeurosheafAnalyzer(device='cpu')
-analysis = analyzer.analyze(model, data, preserve_eigenvalues=True)
+analysis = analyzer.analyze(model, data, method='gromov_wasserstein', gw_config=gw_config)
 sheaf = analysis['sheaf']
 
 print(f"Sheaf constructed: {len(sheaf.stalks)} stalks, {len(sheaf.restrictions)} restrictions")
@@ -417,7 +436,7 @@ sheaf.print_detailed_summary(max_items=5, verbosity='detailed')
 # Run spectral analysis using the analyzer
 print("\n=== Running Spectral Analysis ===")
 spectral_analyzer = PersistentSpectralAnalyzer(
-    default_n_steps=100,  # Reduced for faster execution
+    default_n_steps=50,  # Reduced for faster execution
     default_filtration_type='threshold'
 )
 

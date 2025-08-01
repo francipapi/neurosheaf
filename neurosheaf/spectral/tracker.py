@@ -46,7 +46,8 @@ class SubspaceTracker:
                          eigenvalues_sequence: List[torch.Tensor],
                          eigenvectors_sequence: List[torch.Tensor],
                          filtration_params: List[float],
-                         construction_method: str = 'standard') -> Dict:
+                         construction_method: str = 'standard',
+                         sheaf_metadata: Optional[Dict] = None) -> Dict:
         """Track eigenspaces through filtration parameter changes.
         
         Route to appropriate tracking method based on construction method.
@@ -58,6 +59,7 @@ class SubspaceTracker:
             eigenvectors_sequence: List of eigenvector tensors for each filtration
             filtration_params: List of filtration parameter values
             construction_method: Sheaf construction method
+            sheaf_metadata: Additional metadata about sheaf construction (for GW methods)
             
         Returns:
             Dictionary with tracking information including paths, birth/death events

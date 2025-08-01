@@ -23,6 +23,7 @@ from ..sheaf.data_structures import Sheaf
 from .static_laplacian_unified import UnifiedStaticLaplacian as StaticLaplacianWithMasking
 from .tracker import SubspaceTracker
 from ..utils.dtw_similarity import FiltrationDTW
+from .tracker_factory import SubspaceTrackerFactory
 
 logger = setup_logger(__name__)
 
@@ -64,7 +65,14 @@ class PersistentSpectralAnalyzer:
             dtw_comparator: FiltrationDTW instance for eigenvalue evolution comparison
         """
         self.static_laplacian = static_laplacian or StaticLaplacianWithMasking()
-        self.subspace_tracker = subspace_tracker or SubspaceTracker()
+        
+        # Use factory for subspace tracker to enable method-specific routing
+        if subspace_tracker is not None:
+            self.subspace_tracker = subspace_tracker
+        else:
+            # Will be created dynamically based on sheaf construction method
+            self.subspace_tracker = None
+            
         self.dtw_comparator = dtw_comparator or FiltrationDTW()
         self.default_n_steps = default_n_steps
         self.default_filtration_type = default_filtration_type
@@ -112,6 +120,14 @@ class PersistentSpectralAnalyzer:
         start_time = time.time()
         
         try:
+            # Create appropriate subspace tracker if not already provided
+            if self.subspace_tracker is None:
+                construction_method = sheaf.metadata.get('construction_method', 'standard')
+                self.subspace_tracker = SubspaceTrackerFactory.create_tracker(
+                    construction_method=construction_method
+                )
+                logger.debug(f"Created {construction_method} subspace tracker dynamically")
+            
             # Determine filtration parameters
             filtration_params = self._generate_filtration_params(
                 sheaf, filtration_type, n_steps, param_range
@@ -123,8 +139,9 @@ class PersistentSpectralAnalyzer:
             )
             
             # Compute persistence using static Laplacian with masking
+            construction_method = sheaf.metadata.get('construction_method', 'standard')
             persistence_result = self.static_laplacian.compute_persistence(
-                sheaf, filtration_params, edge_threshold_func
+                sheaf, filtration_params, edge_threshold_func, construction_method
             )
             
             # Extract persistence features
@@ -204,18 +221,53 @@ class PersistentSpectralAnalyzer:
                                      sheaf: Sheaf,
                                      n_steps: int, 
                                      param_range: Optional[Tuple[float, float]]) -> List[float]:
-        """Generate INCREASING filtration for GW costs (typically in [0, 2] for cosine).
+        """Generate edge-aware GW filtration parameters preventing plateau issues.
+        
+        CRITICAL FIX: This method replaces the problematic implementation that caused
+        74-step plateaus with no edge activations. The new approach focuses parameters
+        on actual GW cost transitions for meaningful structural changes.
         
         GW Filtration Logic:
         - Start with NO edges (only isolated stalks)
         - Add edges with cost ≤ threshold as threshold increases
         - Small costs = good matches = added first
-        - Results in INCREASING complexity (opposite of standard)
+        - Results in INCREASING complexity
+        - PREVENTS over-extension beyond actual cost range
         """
-        logger.info("Generating GW-aware filtration parameters")
+        logger.info("Generating edge-aware GW filtration parameters (plateau prevention)")
         
-        # Extract GW costs from metadata
+        # Extract and validate GW costs
+        edge_weights = self._extract_and_validate_gw_costs(sheaf)
+        if not edge_weights:
+            return self._fallback_to_uniform_params(n_steps, param_range)
+        
+        # Apply cost perturbation if needed to break ties
+        if self._has_cost_ties(edge_weights):
+            edge_weights = self._add_cost_perturbation(edge_weights)
+            logger.info("Applied perturbations to break cost ties")
+        
+        # Determine optimal step count based on cost distribution
+        optimal_steps = self._determine_optimal_steps(edge_weights, n_steps)
+        if optimal_steps < n_steps:
+            logger.info(f"Adjusted steps from {n_steps} to {optimal_steps} for optimal edge activation")
+        
+        # Generate edge-aware parameters
+        params = self._generate_edge_aware_params(edge_weights, optimal_steps, param_range)
+        
+        # Validate filtration quality
+        validation_passed = self._validate_filtration_progression(params, edge_weights)
+        if not validation_passed:
+            logger.warning("Filtration quality below optimal - some plateaus detected")
+        
+        # Log comprehensive diagnostics
+        self._log_filtration_diagnostics(params, edge_weights)
+        
+        return params
+    
+    def _extract_and_validate_gw_costs(self, sheaf: Sheaf) -> List[float]:
+        """Extract and validate GW costs from sheaf metadata."""
         gw_costs = sheaf.metadata.get('gw_costs', {})
+        
         if not gw_costs:
             logger.warning("No GW costs found in metadata, computing from restrictions")
             edge_weights = []
@@ -223,153 +275,218 @@ class PersistentSpectralAnalyzer:
                 # Use operator norm as proxy for GW distortion
                 weight = torch.linalg.norm(restriction, ord=2).item()
                 edge_weights.append(weight)
-        else:
-            edge_weights = list(gw_costs.values())
-            
+            return edge_weights
         
-        # Determine parameter range with improved resolution
+        edge_weights = list(gw_costs.values())
+        
+        # Validate costs are reasonable
+        if any(cost < 0 for cost in edge_weights):
+            logger.warning("Negative GW costs detected - taking absolute values")
+            edge_weights = [abs(cost) for cost in edge_weights]
+        
+        if not edge_weights:
+            logger.error("No valid GW costs available")
+            return []
+        
+        logger.info(f"Extracted {len(edge_weights)} GW costs: "
+                   f"range [{min(edge_weights):.6f}, {max(edge_weights):.6f}]")
+        
+        return edge_weights
+    
+    def _has_cost_ties(self, costs: List[float], tolerance: float = 1e-12) -> bool:
+        """Check if there are tied costs that need perturbation."""
+        sorted_costs = sorted(costs)
+        for i in range(1, len(sorted_costs)):
+            if abs(sorted_costs[i] - sorted_costs[i-1]) < tolerance:
+                return True
+        return False
+    
+    def _add_cost_perturbation(self, costs: List[float], scale: float = 1e-9) -> List[float]:
+        """Add tiny perturbations to break cost ties."""
+        costs_array = np.array(costs)
+        unique_costs, inverse_indices, counts = np.unique(costs_array, return_inverse=True, return_counts=True)
+        
+        # Only perturb costs that appear multiple times
+        for i, (unique_cost, count) in enumerate(zip(unique_costs, counts)):
+            if count > 1:
+                # Find all positions with this cost
+                mask = costs_array == unique_cost
+                n_ties = np.sum(mask)
+                
+                # Generate small perturbations centered on zero
+                perturbations = np.linspace(-scale, scale, n_ties)
+                costs_array[mask] += perturbations
+                
+                logger.debug(f"Perturbed {n_ties} copies of cost {unique_cost:.6f}")
+        
+        return costs_array.tolist()
+    
+    def _determine_optimal_steps(self, costs: List[float], requested_steps: int) -> int:
+        """Determine optimal number of steps based on cost distribution.
+        
+        RADICAL PLATEAU PREVENTION: Only use meaningful steps based on actual costs.
+        This prevents the 75% plateau issue by not trying to fill arbitrary step counts.
+        """
+        unique_costs = len(set(costs))
+        
+        # RADICAL FIX: Never use more steps than we can meaningfully fill
+        # Use exactly: unique_costs + modest_buffer to avoid plateaus
+        # This ensures every step provides structural information
+        modest_buffer = min(3, max(1, unique_costs // 3))  # Very small buffer
+        optimal_steps = unique_costs + modest_buffer + 1  # +1 for zero-edge start
+        
+        # CRITICAL: Cap at meaningful maximum - never create excessive steps
+        max_meaningful_steps = unique_costs * 2  # At most 2 steps per unique cost
+        optimal_steps = min(optimal_steps, max_meaningful_steps)
+        
+        # If user requested fewer steps, use that (never force more)
+        if requested_steps < optimal_steps:
+            logger.info(f"Using user-requested {requested_steps} steps "
+                       f"(optimal would be {optimal_steps} for {unique_costs} unique costs)")
+            optimal_steps = requested_steps
+        else:
+            logger.info(f"Limiting steps from {requested_steps} to {optimal_steps} "
+                       f"to prevent plateaus (only {unique_costs} unique costs available)")
+        
+        return optimal_steps
+    
+    def _generate_edge_aware_params(self, costs: List[float], n_steps: int, 
+                                  param_range: Optional[Tuple[float, float]]) -> List[float]:
+        """Generate parameters focused on actual edge cost transitions."""
+        sorted_costs = sorted(costs)
+        
+        # Determine meaningful parameter range (CRITICAL FIX: no over-extension)
         if param_range is not None:
-            min_cost, max_cost = param_range
-            logger.info(f"Using user-provided GW cost range: [{min_cost:.4f}, {max_cost:.4f}]")
+            min_param, max_param = param_range
+            logger.info(f"Using user-provided parameter range: [{min_param:.6f}, {max_param:.6f}]")
         else:
-            if not edge_weights:
-                logger.warning("No edges found, using default GW range")
-                min_cost, max_cost = 0.0, 2.0
-            else:
-                min_weight = min(edge_weights)
-                max_weight = max(edge_weights)
-                
-                # CRITICAL FIX: Expand range for better filtration resolution
-                # Start significantly below minimum to capture progressive edge addition
-                weight_range = max_weight - min_weight
-                if weight_range > 0:
-                    # Use 20% margin below min and 10% above max for better coverage
-                    margin_below = max(0.2 * weight_range, 0.1 * min_weight, 0.01)
-                    margin_above = max(0.1 * weight_range, 0.05 * max_weight, 0.01)
-                    min_cost = max(0.0, min_weight - margin_below)  # Never negative
-                    max_cost = max_weight + margin_above
-                else:
-                    # All edges have same weight - create small range around it
-                    margin = max(0.1 * min_weight, 0.01)
-                    min_cost = max(0.0, min_weight - margin)
-                    max_cost = min_weight + margin
-                
-                logger.info(f"Auto-detected GW cost range: [{min_cost:.4f}, {max_cost:.4f}] "
-                           f"(expanded from edge range [{min_weight:.4f}, {max_weight:.4f}])")
+            # Use actual cost range with minimal margins (NO OVER-EXTENSION)
+            min_param = max(0.0, sorted_costs[0] - 1e-8)  # Just below minimum cost
+            max_param = sorted_costs[-1] + 1e-8           # Just above maximum cost
+            logger.info(f"Using edge-aware parameter range: [{min_param:.6f}, {max_param:.6f}] "
+                       f"(tightly bound to actual costs)")
         
-        # Generate ADAPTIVE parameter sequence based on actual edge cost distribution
-        # This ensures each filtration step includes a different set of edges
-        if edge_weights:
-            # Sort edge weights to understand distribution (after perturbations)
-            sorted_weights = sorted(set(edge_weights))
-            unique_costs = len(sorted_weights)
-            
-            logger.info(f"Found {unique_costs} unique GW costs: {[f'{w:.6f}' for w in sorted_weights[:5]]}{'...' if unique_costs > 5 else ''}")
-            
-            if unique_costs >= n_steps:
-                # Use actual cost values as breakpoints for maximum distinctness
-                # Select n_steps costs that provide good coverage
-                indices = np.linspace(0, unique_costs - 1, n_steps, dtype=int)
-                params = [sorted_weights[i] for i in indices]
-                # Ensure we include the minimum (start with no edges)
-                if params[0] > min_cost:
-                    params[0] = min_cost
-                # Ensure we include beyond maximum (end with all edges)  
-                if params[-1] < max_cost:
-                    params[-1] = max_cost
-                logger.info("Using cost-based filtration parameters with high resolution")
-            elif unique_costs < len(edge_weights) * 0.7:
-                # Handle clustered costs with high-resolution uniform sampling
-                logger.info(f"Detected clustered costs ({unique_costs} unique), using fine-scale uniform sampling")
-                # Use very fine uniform sampling to capture transitions between cost clusters
-                params = np.linspace(min_cost, max_cost, n_steps).tolist()
-                logger.info("Using high-resolution uniform sampling for clustered costs")
-            else:
-                # Create parameters that ensure each step includes different edge sets
-                params = []
-                
-                # Start with minimal threshold to have only the smallest cost edge
-                if sorted_weights[0] > 0:
-                    params.append(sorted_weights[0] - 1e-12)  # Just below first edge
-                
-                # Add threshold for each unique edge cost to ensure progressive inclusion
-                for i, cost in enumerate(sorted_weights):
-                    # Add threshold slightly above this cost to include this edge
-                    params.append(cost + 1e-12)
-                    
-                    # Add intermediate points between this and next cost if space allows
-                    if i < len(sorted_weights) - 1 and len(params) < n_steps:
-                        next_cost = sorted_weights[i + 1]
-                        # Only add intermediate if there's significant gap
-                        if next_cost - cost > 2e-10:
-                            mid_point = (cost + next_cost) / 2
-                            params.append(mid_point)
-                
-                # Ensure we end beyond the maximum to include all edges
-                if params[-1] <= sorted_weights[-1]:
-                    params.append(max_cost)
-                
-                # Select best subset if we have too many parameters
-                if len(params) > n_steps:
-                    # Prioritize parameters that change edge inclusion count
-                    edge_counts = []
-                    for p in params:
-                        count = sum(1 for w in sorted_weights if w <= p)
-                        edge_counts.append(count)
-                    
-                    # Find parameters with unique edge counts
-                    unique_params = []
-                    seen_counts = set()
-                    for p, count in zip(params, edge_counts):
-                        if count not in seen_counts:
-                            unique_params.append(p)
-                            seen_counts.add(count)
-                    
-                    # If we still have too many, space them out evenly
-                    if len(unique_params) > n_steps:
-                        indices = np.linspace(0, len(unique_params) - 1, n_steps, dtype=int)
-                        params = [unique_params[i] for i in indices]
-                    else:
-                        params = unique_params
-                
-                logger.info("Using cost-transition based filtration parameters")
-        else:
-            # Fallback to uniform spacing if no edge weights
-            if min_cost > 0 and max_cost > min_cost * 10:
-                params = np.logspace(np.log10(min_cost), np.log10(max_cost), n_steps).tolist()
-                logger.info("Using log-scale filtration parameters (fallback)")
-            else:
-                params = np.linspace(min_cost, max_cost, n_steps).tolist()
-                logger.info("Using linear scale filtration parameters (fallback)")
+        params = []
         
-        # Ensure parameters are sorted and deduplicated
-        params = sorted(list(set(params)))
+        # Start with zero edges active
+        params.append(min_param)
         
-        # If we ended up with fewer parameters than requested, fill gaps
-        while len(params) < n_steps:
-            # Find largest gap and insert midpoint
+        # Add parameter just above each cost for edge activation
+        for cost in sorted_costs:
+            # Add parameter that activates this edge
+            activation_param = cost + 1e-9
+            if activation_param <= max_param:
+                params.append(activation_param)
+        
+        # CONSERVATIVE GAP FILLING: Only add steps that provide meaningful resolution
+        # RADICAL FIX: Stop when we have enough parameters for all edge transitions
+        unique_costs = len(set(sorted_costs))
+        
+        # We already have parameters for: start + each edge activation
+        # Only fill a few gaps for better resolution, but never create excessive steps
+        max_reasonable_steps = min(n_steps, unique_costs * 2)  # Hard cap at 2x unique costs
+        
+        gap_fill_iterations = 0
+        max_gap_fills = min(3, max_reasonable_steps - len(params))  # Very conservative
+        
+        while len(params) < max_reasonable_steps and gap_fill_iterations < max_gap_fills:
+            # Find largest gap that's actually meaningful (not tiny numerical gaps)
             max_gap = 0
-            max_gap_idx = 0
+            max_gap_idx = -1
+            
             for i in range(len(params) - 1):
                 gap = params[i + 1] - params[i]
-                if gap > max_gap:
+                # Only consider gaps that are reasonably large (not numerical precision)
+                if gap > max_gap and gap > 1e-6:  # Much larger threshold
                     max_gap = gap
                     max_gap_idx = i
             
-            if max_gap > 1e-10:
+            if max_gap_idx >= 0:
+                # Insert midpoint in largest meaningful gap
                 mid_point = (params[max_gap_idx] + params[max_gap_idx + 1]) / 2
                 params.insert(max_gap_idx + 1, mid_point)
+                gap_fill_iterations += 1
             else:
-                break  # Cannot create more distinct parameters
+                # No meaningful gaps left - perfect!
+                logger.info(f"Optimal filtration achieved at {len(params)} steps "
+                           f"(no more meaningful gaps to fill)")
+                break
         
-        # Trim if we have too many
+        # If we still have too few steps and user specifically requested more,
+        # only then consider very minor additional interpolation
+        if len(params) < n_steps and gap_fill_iterations == 0:
+            logger.info(f"Generated {len(params)} meaningful steps for {unique_costs} unique costs "
+                       f"(user requested {n_steps} but more would create plateaus)")
+        
+        # Ensure parameters are sorted and within bounds
+        params = sorted([p for p in set(params) if min_param <= p <= max_param])
+        
+        # Trim to requested number of steps
         if len(params) > n_steps:
             params = params[:n_steps]
         
-        logger.info(f"Generated {len(params)} adaptive GW filtration parameters: "
-                   f"[{params[0]:.6f}, ..., {params[-1]:.6f}] (INCREASING complexity)")
-        
         return params
+    
+    def _validate_filtration_progression(self, params: List[float], costs: List[float]) -> bool:
+        """Validate that filtration provides meaningful structural changes."""
+        if len(params) < 2:
+            return True  # Too few steps to validate
+        
+        # Predict edge activation pattern
+        edge_counts = []
+        for param in params:
+            count = sum(1 for cost in costs if cost <= param)
+            edge_counts.append(count)
+        
+        # Calculate plateau metrics
+        changes = np.diff(edge_counts)
+        no_change_steps = np.sum(changes == 0)
+        plateau_ratio = no_change_steps / len(changes) if len(changes) > 0 else 0
+        
+        # Check for excessive plateaus (threshold: 30%)
+        if plateau_ratio > 0.3:
+            logger.warning(f"Filtration quality issue: {plateau_ratio:.1%} plateau ratio "
+                          f"(target: <30%)")
+            return False
+        
+        # Check for reasonable progression
+        max_single_change = np.max(changes) if len(changes) > 0 else 0
+        if max_single_change > 5:
+            logger.warning(f"Large batch activation detected: {max_single_change} edges "
+                          f"activate simultaneously")
+        
+        logger.info(f"Filtration quality validation: {plateau_ratio:.1%} plateau ratio ✓")
+        return True
+    
+    def _log_filtration_diagnostics(self, params: List[float], costs: List[float]):
+        """Log comprehensive diagnostics about filtration generation."""
+        # Edge activation prediction
+        edge_counts = [sum(1 for cost in costs if cost <= param) for param in params]
+        
+        # Statistics
+        plateau_changes = np.diff(edge_counts)
+        plateau_ratio = np.sum(plateau_changes == 0) / len(plateau_changes) if len(plateau_changes) > 0 else 0
+        
+        logger.info(f"Generated {len(params)} edge-aware filtration parameters:")
+        logger.info(f"  Parameter range: [{params[0]:.6f}, {params[-1]:.6f}]")
+        logger.info(f"  Edge activation: {edge_counts[0]} → {edge_counts[-1]} edges")
+        logger.info(f"  Plateau ratio: {plateau_ratio:.1%} (target: <30%)")
+        logger.info(f"  Unique costs: {len(set(costs))}, Steps: {len(params)}")
+        
+        # Log first few transitions for debugging
+        logger.debug("First 5 edge activation steps:")
+        for i in range(min(5, len(params))):
+            logger.debug(f"  Step {i}: param={params[i]:.6f}, edges={edge_counts[i]}")
+    
+    def _fallback_to_uniform_params(self, n_steps: int, param_range: Optional[Tuple[float, float]]) -> List[float]:
+        """Fallback to uniform parameter spacing when no costs available."""
+        if param_range is not None:
+            min_param, max_param = param_range
+        else:
+            min_param, max_param = 0.0, 1.0
+        
+        logger.warning(f"Using uniform fallback parameters: [{min_param:.4f}, {max_param:.4f}]")
+        return np.linspace(min_param, max_param, n_steps).tolist()
     
     def _generate_standard_filtration_params(self, 
                                            sheaf: Sheaf, 
