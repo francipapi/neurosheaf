@@ -1268,25 +1268,42 @@ class PersistentSpectralAnalyzer:
             
             # Validation logic depends on construction method
             if construction_method == 'gromov_wasserstein':
-                # GW: Increasing complexity → Early steps should have MORE small eigenvalues
-                # Early params (sparse) → many disconnected components → many small eigenvalues
-                # Late params (dense) → fewer components → fewer, larger eigenvalues
-                expected_early_more_eigenvals = non_zero_counts[0] >= non_zero_counts[-1]
-                expected_early_smaller_mean = mean_eigenvalues[0] <= mean_eigenvalues[-1] * 2  # Allow some flexibility
+                # GW: CORRECT BEHAVIOR: 0 eigenvalues → many eigenvalues
+                # Early params (sparse/disconnected) → 0 or few eigenvalues 
+                # Late params (dense/connected) → many eigenvalues
+                # This matches GW construction: sparse graphs → dense graphs
                 
-                if not expected_early_more_eigenvals:
+                expected_progression = non_zero_counts[0] <= non_zero_counts[-1]
+                expected_mean_increase = True  # Allow any mean progression since structure matters more
+                
+                # Allow for legitimate 0→many progression
+                if non_zero_counts[0] == 0 and non_zero_counts[-1] > 0:
+                    logger.info(f"✅ GW semantic validation: Correct 0→many eigenvalue progression "
+                               f"(start: {non_zero_counts[0]} eigenvalues, end: {non_zero_counts[-1]} eigenvalues)")
+                elif expected_progression:
+                    logger.info(f"✅ GW semantic validation: Correct eigenvalue progression "
+                               f"(start: {non_zero_counts[0]} eigenvalues, end: {non_zero_counts[-1]} eigenvalues)")
+                else:
                     validation['warnings'].append(
-                        f"GW semantics: Expected early step ({filtration_params[0]:.4f}) to have ≥ eigenvalues than late step ({filtration_params[-1]:.4f}), "
-                        f"but got {non_zero_counts[0]} vs {non_zero_counts[-1]}")
+                        f"GW semantics: Expected eigenvalue count increase from sparse→dense, "
+                        f"but got {non_zero_counts[0]} → {non_zero_counts[-1]} eigenvalues")
                     validation['is_valid'] = False
                 
-                if not expected_early_smaller_mean and mean_eigenvalues[0] > 0 and mean_eigenvalues[-1] > 0:
-                    validation['warnings'].append(
-                        f"GW semantics: Expected early step to have smaller mean eigenvalue, "
-                        f"but got {mean_eigenvalues[0]:.6f} vs {mean_eigenvalues[-1]:.6f}")
+                # Additional check: monotonic or at least non-decreasing trend
+                decreases = 0
+                for i in range(1, len(non_zero_counts)):
+                    if non_zero_counts[i] < non_zero_counts[i-1]:
+                        decreases += 1
                 
+                # Allow some minor fluctuations but not major decreases
+                if decreases > len(non_zero_counts) * 0.3:  # More than 30% steps decrease
+                    validation['warnings'].append(
+                        f"GW semantics: Too many eigenvalue count decreases ({decreases}/{len(non_zero_counts)} steps) - "
+                        f"expected mostly increasing trend for sparse→dense construction")
+                    
                 logger.info(f"GW semantic validation: Early step {non_zero_counts[0]} eigenvalues (mean={mean_eigenvalues[0]:.6f}), "
-                           f"Late step {non_zero_counts[-1]} eigenvalues (mean={mean_eigenvalues[-1]:.6f})")
+                           f"Late step {non_zero_counts[-1]} eigenvalues (mean={mean_eigenvalues[-1]:.6f}), "
+                           f"Decreases: {decreases}/{len(non_zero_counts)}")
                 
             else:
                 # Standard: Decreasing complexity → Early steps should have FEWER large eigenvalues  

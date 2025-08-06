@@ -251,6 +251,40 @@ class GromovWassersteinComputer:
         
         return cost_matrix
     
+    def compute_adaptive_epsilon(self, n_source: int, n_target: int) -> float:
+        """Compute adaptive epsilon based on sample sizes.
+        
+        Uses sqrt scaling: epsilon = base_epsilon * sqrt(reference_n / n_avg)
+        This maintains the balance between regularization and accuracy as n changes.
+        
+        Args:
+            n_source: Number of source samples
+            n_target: Number of target samples
+            
+        Returns:
+            Adaptive epsilon value
+        """
+        if not self.config.adaptive_epsilon:
+            return self.config.epsilon
+        
+        # Average sample size
+        n_avg = (n_source + n_target) / 2.0
+        
+        # Apply sqrt scaling (recommended by theory: ε ~ 1/√n)
+        if self.config.epsilon_scaling_method == 'sqrt':
+            epsilon = self.config.base_epsilon * np.sqrt(self.config.reference_n / n_avg)
+        else:
+            # For now, only sqrt is implemented
+            raise ValueError(f"Unknown scaling method: {self.config.epsilon_scaling_method}")
+        
+        # Clamp to reasonable range
+        epsilon = np.clip(epsilon, self.config.epsilon_min, self.config.epsilon_max)
+        
+        logger.info(f"Adaptive epsilon: {epsilon:.4f} (base={self.config.base_epsilon}, "
+                    f"n_avg={n_avg:.0f}, reference_n={self.config.reference_n})")
+        
+        return epsilon
+    
     def compute_gw_coupling(self, 
                            C_source: torch.Tensor, 
                            C_target: torch.Tensor,
@@ -285,11 +319,39 @@ class GromovWassersteinComputer:
         if not self.config.uniform_measures:
             logger.warning("Non-uniform measures requested but not fully implemented")
         
-        # Compute GW coupling
-        if POT_AVAILABLE:
-            coupling, cost, log = self._compute_gw_pot(C_source, C_target, p_source, p_target)
-        else:
-            coupling, cost, log = self._compute_gw_fallback(C_source, C_target, p_source, p_target)
+        # Compute adaptive epsilon if enabled
+        epsilon_adaptive = self.compute_adaptive_epsilon(n_source, n_target)
+        
+        # Temporarily update epsilon for this computation
+        original_epsilon = self.config.epsilon
+        self.config.epsilon = epsilon_adaptive
+        
+        try:
+            # Compute GW coupling with adaptive epsilon
+            if POT_AVAILABLE:
+                coupling, cost, log = self._compute_gw_pot(C_source, C_target, p_source, p_target)
+            else:
+                coupling, cost, log = self._compute_gw_fallback(C_source, C_target, p_source, p_target)
+            
+            # Add adaptive epsilon info to log
+            log['epsilon_used'] = epsilon_adaptive
+            log['epsilon_adaptive_enabled'] = self.config.adaptive_epsilon
+            
+            # Optional: Monitor coupling entropy to verify it's not too diffuse
+            if coupling.numel() > 0:
+                coupling_safe = coupling + 1e-12
+                entropy = -(coupling_safe * torch.log(coupling_safe)).sum().item()
+                max_entropy = np.log(n_source * n_target)
+                log['coupling_entropy_ratio'] = entropy / max_entropy
+                
+                if log['coupling_entropy_ratio'] > 0.95:
+                    logger.warning(f"Coupling is very diffuse (entropy ratio: "
+                                 f"{log['coupling_entropy_ratio']:.3f}). "
+                                 f"Consider decreasing base_epsilon.")
+            
+        finally:
+            # Restore original epsilon
+            self.config.epsilon = original_epsilon
         
         # Create result
         result = GWResult(

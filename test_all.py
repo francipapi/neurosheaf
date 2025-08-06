@@ -396,10 +396,17 @@ rand_custom_path = "models/random_custom_net_000_default_seed_42.pth"
 rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
 
 gw_config = GWConfig(
-        epsilon=0.05,  # More accurate
+        epsilon=0.05,  # This becomes base_epsilon when adaptive is enabled
         max_iter=100, 
         tolerance=1e-8,
-        quasi_sheaf_tolerance=0.08
+        quasi_sheaf_tolerance=0.08,
+        # Enable adaptive epsilon scaling
+        adaptive_epsilon=True,
+        base_epsilon=0.05,  # Using the original epsilon as base
+        reference_n=50,  # Reference sample size (your working size)
+        epsilon_scaling_method='sqrt',  # Use sqrt scaling as recommended
+        epsilon_min=0.01,  # Don't go below this
+        epsilon_max=0.2   # Don't go above this
     )
 
 # Try to load MLP model first (simpler architecture)
@@ -418,7 +425,7 @@ if mlp_model is None:
 model = mlp_model
 
 # Generate sample data that matches your model's expected input (3D torus data)
-batch_size = 50
+batch_size = 100
 data = 8*torch.randn(batch_size, 3)  # 3 features input for torus data
 print(f"Generated data shape: {data.shape}")
 

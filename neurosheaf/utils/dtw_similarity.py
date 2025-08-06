@@ -374,7 +374,10 @@ class FiltrationDTW:
                                    filtration_params1: Optional[List[float]] = None,
                                    filtration_params2: Optional[List[float]] = None,
                                    eigenvalue_index: Optional[int] = None,
-                                   multivariate: bool = False) -> Dict[str, Any]:
+                                   multivariate: bool = False,
+                                   use_interpolation: bool = True,
+                                   match_all_eigenvalues: bool = True,
+                                   interpolation_points: Optional[int] = None) -> Dict[str, Any]:
         """Compare eigenvalue evolution between two filtration sequences.
         
         Args:
@@ -384,6 +387,9 @@ class FiltrationDTW:
             filtration_params2: Filtration parameters for second sequence
             eigenvalue_index: Index of eigenvalue to compare (None = all)
             multivariate: Whether to use multivariate DTW
+            use_interpolation: Whether to use interpolation for multivariate DTW
+            match_all_eigenvalues: Whether to compare all eigenvalues (only with interpolation)
+            interpolation_points: Number of interpolation points (auto if None)
             
         Returns:
             Dictionary containing:
@@ -391,17 +397,30 @@ class FiltrationDTW:
             - alignment: Optimal alignment path
             - normalized_distance: Distance normalized by sequence lengths
             - alignment_visualization: Data for plotting alignment
+            - interpolation_info: Information about interpolation (if used)
         """
         # Validate inputs
         self._validate_evolution_sequences(evolution1, evolution2)
         
         # Extract eigenvalue sequences
-        if multivariate:
+        if multivariate and use_interpolation and match_all_eigenvalues:
+            # Use new interpolation-based extraction
+            seq1, seq2 = self._extract_multivariate_sequences_interpolated(
+                evolution1, evolution2,
+                filtration_params1, filtration_params2,
+                interpolation_points
+            )
+            interpolation_used = True
+        elif multivariate:
+            # Use original multivariate extraction (with padding/truncation)
             seq1, seq2 = self._extract_multivariate_sequences(evolution1, evolution2)
+            interpolation_used = False
         else:
+            # Univariate extraction
             seq1, seq2 = self._extract_univariate_sequences(
                 evolution1, evolution2, eigenvalue_index
             )
+            interpolation_used = False
         
         # Validate sequence diversity before DTW computation
         diversity_issues = self._validate_sequence_diversity(seq1, seq2, multivariate)
@@ -431,6 +450,16 @@ class FiltrationDTW:
             seq1, seq2, alignment, filtration_params1, filtration_params2
         )
         
+        # Prepare interpolation info if used
+        interpolation_info = None
+        if interpolation_used:
+            interpolation_info = {
+                'method': 'piecewise_linear',
+                'num_features': seq1.shape[1] if seq1.ndim > 1 else 1,
+                'num_time_points': len(seq1),
+                'used_all_eigenvalues': match_all_eigenvalues
+            }
+        
         return {
             'distance': float(distance),
             'alignment': alignment,
@@ -440,14 +469,19 @@ class FiltrationDTW:
             'sequence1_length': len(seq1),
             'sequence2_length': len(seq2),
             'method': self.method,
-            'multivariate': multivariate
+            'multivariate': multivariate,
+            'interpolation_used': interpolation_used,
+            'interpolation_info': interpolation_info
         }
     
     def compare_multiple_evolutions(self,
                                   evolutions: List[List[torch.Tensor]],
                                   filtration_params: Optional[List[List[float]]] = None,
                                   eigenvalue_index: Optional[int] = None,
-                                  multivariate: bool = False) -> np.ndarray:
+                                  multivariate: bool = False,
+                                  use_interpolation: bool = True,
+                                  match_all_eigenvalues: bool = True,
+                                  interpolation_points: Optional[int] = None) -> np.ndarray:
         """Compare multiple eigenvalue evolutions pairwise.
         
         Args:
@@ -455,6 +489,9 @@ class FiltrationDTW:
             filtration_params: List of filtration parameter sequences
             eigenvalue_index: Index of eigenvalue to compare (None = all)
             multivariate: Whether to use multivariate DTW
+            use_interpolation: Whether to use interpolation for multivariate DTW
+            match_all_eigenvalues: Whether to compare all eigenvalues (only with interpolation)
+            interpolation_points: Number of interpolation points (auto if None)
             
         Returns:
             Symmetric distance matrix of shape (n_evolutions, n_evolutions)
@@ -462,7 +499,8 @@ class FiltrationDTW:
         n_evolutions = len(evolutions)
         distance_matrix = np.zeros((n_evolutions, n_evolutions))
         
-        logger.info(f"Computing pairwise DTW distances for {n_evolutions} evolutions")
+        method_desc = "interpolation-based" if (multivariate and use_interpolation) else "standard"
+        logger.info(f"Computing pairwise DTW distances for {n_evolutions} evolutions using {method_desc} method")
         
         for i in range(n_evolutions):
             for j in range(i + 1, n_evolutions):
@@ -471,7 +509,8 @@ class FiltrationDTW:
                 
                 result = self.compare_eigenvalue_evolution(
                     evolutions[i], evolutions[j], params1, params2,
-                    eigenvalue_index, multivariate
+                    eigenvalue_index, multivariate,
+                    use_interpolation, match_all_eigenvalues, interpolation_points
                 )
                 
                 distance_matrix[i, j] = result['normalized_distance']
@@ -608,6 +647,318 @@ class FiltrationDTW:
         except Exception as e:
             logger.error(f"Failed to extract multivariate sequences: {e}")
             raise ComputationError(f"Multivariate sequence extraction failed: {e}")
+    
+    def _organize_eigenvalue_sequences(self, evolution: List[torch.Tensor]) -> Dict[str, Any]:
+        """Organize eigenvalues into trackable sequences.
+        
+        Args:
+            evolution: List of eigenvalue tensors for each filtration step
+            
+        Returns:
+            Dictionary containing:
+            - sequences: List[List[float]], where sequences[i] tracks i-th eigenvalue
+            - exists_mask: List[List[bool]], existence mask for each eigenvalue
+            - num_eigenvalues_per_step: List[int], number of eigenvalues at each step
+            - max_eigenvalues: int, maximum number of eigenvalues across all steps
+        """
+        # Find maximum number of eigenvalues
+        num_eigenvalues_per_step = [len(eigenvals) for eigenvals in evolution]
+        max_eigenvalues = max(num_eigenvalues_per_step) if num_eigenvalues_per_step else 0
+        
+        # Initialize sequences and masks
+        sequences = [[] for _ in range(max_eigenvalues)]
+        exists_mask = [[] for _ in range(max_eigenvalues)]
+        
+        # Organize eigenvalues by index
+        for step_idx, eigenvals in enumerate(evolution):
+            n_eigen = len(eigenvals)
+            
+            # Sort eigenvalues in ascending order for consistent tracking
+            if n_eigen > 0:
+                sorted_eigenvals = torch.sort(eigenvals)[0]
+                eigenvals_array = sorted_eigenvals.detach().cpu().numpy()
+            else:
+                eigenvals_array = np.array([])
+            
+            # Track each eigenvalue
+            for eigen_idx in range(max_eigenvalues):
+                if eigen_idx < n_eigen:
+                    # Eigenvalue exists at this step
+                    sequences[eigen_idx].append(float(eigenvals_array[eigen_idx]))
+                    exists_mask[eigen_idx].append(True)
+                else:
+                    # Eigenvalue doesn't exist at this step
+                    sequences[eigen_idx].append(None)
+                    exists_mask[eigen_idx].append(False)
+        
+        return {
+            'sequences': sequences,
+            'exists_mask': exists_mask,
+            'num_eigenvalues_per_step': num_eigenvalues_per_step,
+            'max_eigenvalues': max_eigenvalues
+        }
+    
+    def _create_normalized_position_mapping(self, 
+                                          filtration_params: List[float],
+                                          sequence: List[Optional[float]],
+                                          exists_mask: List[bool]) -> Tuple[np.ndarray, np.ndarray]:
+        """Map eigenvalue sequence to normalized positions.
+        
+        Args:
+            filtration_params: Original filtration parameters
+            sequence: Eigenvalue sequence (may contain None values)
+            exists_mask: Boolean mask indicating where eigenvalues exist
+            
+        Returns:
+            normalized_positions: Array of normalized positions [0, 1] where eigenvalue exists
+            values: Corresponding eigenvalue values
+        """
+        # Extract valid (position, value) pairs
+        valid_positions = []
+        valid_values = []
+        
+        # Normalize filtration parameters to [0, 1]
+        params_array = np.array(filtration_params)
+        param_min = params_array.min()
+        param_max = params_array.max()
+        
+        # Handle edge case of constant parameters
+        if param_max - param_min < 1e-10:
+            # Distribute evenly in [0, 1]
+            normalized_params = np.linspace(0, 1, len(filtration_params))
+        else:
+            # Standard normalization
+            normalized_params = (params_array - param_min) / (param_max - param_min)
+        
+        # Extract valid points
+        for i, (val, exists) in enumerate(zip(sequence, exists_mask)):
+            if exists and val is not None:
+                valid_positions.append(normalized_params[i])
+                valid_values.append(max(val, self.min_eigenvalue_threshold))
+        
+        return np.array(valid_positions), np.array(valid_values)
+    
+    def _interpolate_eigenvalue_sequence(self,
+                                       positions: np.ndarray,
+                                       values: np.ndarray,
+                                       target_positions: np.ndarray) -> np.ndarray:
+        """Perform piecewise linear interpolation of eigenvalue sequence.
+        
+        Args:
+            positions: Normalized positions [0,1] where eigenvalues exist
+            values: Eigenvalue values at those positions
+            target_positions: Target positions for interpolation
+            
+        Returns:
+            Interpolated eigenvalue values at target positions
+        """
+        from scipy.interpolate import interp1d
+        
+        # Handle edge cases
+        if len(positions) == 0:
+            # No valid eigenvalues - return threshold values
+            return np.full_like(target_positions, self.min_eigenvalue_threshold)
+        
+        if len(positions) == 1:
+            # Single eigenvalue - constant interpolation
+            return np.full_like(target_positions, values[0])
+        
+        # Create interpolator with constant extrapolation
+        interpolator = interp1d(
+            positions, values,
+            kind='linear',
+            bounds_error=False,
+            fill_value=(values[0], values[-1])  # Constant extrapolation
+        )
+        
+        # Interpolate at target positions
+        interpolated = interpolator(target_positions)
+        
+        # Ensure all values are above threshold
+        interpolated = np.maximum(interpolated, self.min_eigenvalue_threshold)
+        
+        return interpolated
+    
+    def _determine_common_sampling_points(self,
+                                        evolution1: List[torch.Tensor],
+                                        evolution2: List[torch.Tensor],
+                                        filtration_params1: List[float],
+                                        filtration_params2: List[float],
+                                        interpolation_points: Optional[int] = None) -> np.ndarray:
+        """Determine optimal sampling points for both sequences.
+        
+        Args:
+            evolution1: First eigenvalue evolution
+            evolution2: Second eigenvalue evolution
+            filtration_params1: First filtration parameters
+            filtration_params2: Second filtration parameters
+            interpolation_points: Number of interpolation points (auto if None)
+            
+        Returns:
+            Array of normalized sampling points in [0, 1]
+        """
+        if interpolation_points is not None:
+            # Use fixed number of points
+            return np.linspace(0, 1, interpolation_points)
+        
+        # Normalize both parameter sets
+        params1_array = np.array(filtration_params1)
+        params2_array = np.array(filtration_params2)
+        
+        # Normalize to [0, 1]
+        def normalize_params(params):
+            p_min, p_max = params.min(), params.max()
+            if p_max - p_min < 1e-10:
+                return np.linspace(0, 1, len(params))
+            return (params - p_min) / (p_max - p_min)
+        
+        norm_params1 = normalize_params(params1_array)
+        norm_params2 = normalize_params(params2_array)
+        
+        # Combine all normalized points and sort
+        all_points = np.concatenate([norm_params1, norm_params2])
+        unique_points = np.unique(all_points)
+        
+        # Optionally add intermediate points for better resolution
+        if len(unique_points) < 1.5 * max(len(filtration_params1), len(filtration_params2)):
+            # Add midpoints between consecutive unique points
+            midpoints = []
+            for i in range(len(unique_points) - 1):
+                midpoints.append((unique_points[i] + unique_points[i+1]) / 2)
+            
+            if midpoints:
+                all_points_with_midpoints = np.concatenate([unique_points, midpoints])
+                unique_points = np.unique(all_points_with_midpoints)
+        
+        return unique_points
+    
+    def _match_eigenvalue_sequences(self,
+                                  organized1: Dict[str, Any],
+                                  organized2: Dict[str, Any]) -> List[Tuple[int, int]]:
+        """Match eigenvalue sequences between two models.
+        
+        Args:
+            organized1: Organized eigenvalue data from first model
+            organized2: Organized eigenvalue data from second model
+            
+        Returns:
+            List of (idx1, idx2) tuples indicating matched eigenvalue indices
+        """
+        n_eigen1 = organized1['max_eigenvalues']
+        n_eigen2 = organized2['max_eigenvalues']
+        
+        # Direct matching for common eigenvalues (by position in sorted spectrum)
+        n_common = min(n_eigen1, n_eigen2)
+        matches = [(i, i) for i in range(n_common)]
+        
+        # Log matching information
+        logger.debug(f"Eigenvalue matching: model1 has {n_eigen1} eigenvalues, "
+                    f"model2 has {n_eigen2} eigenvalues, {n_common} direct matches")
+        
+        # For now, we use position-based matching only
+        # More sophisticated matching (correlation-based) can be added later if needed
+        
+        return matches
+    
+    def _extract_multivariate_sequences_interpolated(self,
+                                                   evolution1: List[torch.Tensor],
+                                                   evolution2: List[torch.Tensor],
+                                                   filtration_params1: Optional[List[float]] = None,
+                                                   filtration_params2: Optional[List[float]] = None,
+                                                   interpolation_points: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract multivariate eigenvalue sequences using interpolation.
+        
+        This method preserves ALL eigenvalues and uses interpolation to handle
+        different numbers of eigenvalues between models.
+        
+        Args:
+            evolution1: First eigenvalue evolution sequence
+            evolution2: Second eigenvalue evolution sequence
+            filtration_params1: Filtration parameters for first sequence
+            filtration_params2: Filtration parameters for second sequence
+            interpolation_points: Number of interpolation points (auto if None)
+            
+        Returns:
+            Tuple of interpolated multivariate sequences with shape (n_steps, n_features)
+        """
+        try:
+            # Use default filtration parameters if not provided
+            if filtration_params1 is None:
+                filtration_params1 = list(range(len(evolution1)))
+            if filtration_params2 is None:
+                filtration_params2 = list(range(len(evolution2)))
+            
+            # Organize eigenvalue sequences
+            organized1 = self._organize_eigenvalue_sequences(evolution1)
+            organized2 = self._organize_eigenvalue_sequences(evolution2)
+            
+            # Determine common sampling points
+            sampling_points = self._determine_common_sampling_points(
+                evolution1, evolution2, 
+                filtration_params1, filtration_params2,
+                interpolation_points
+            )
+            
+            # Match eigenvalue sequences
+            matches = self._match_eigenvalue_sequences(organized1, organized2)
+            
+            # Interpolate matched sequences
+            seq1_interpolated = []
+            seq2_interpolated = []
+            
+            for idx1, idx2 in matches:
+                # Get sequences and masks
+                sequence1 = organized1['sequences'][idx1]
+                mask1 = organized1['exists_mask'][idx1]
+                
+                sequence2 = organized2['sequences'][idx2]
+                mask2 = organized2['exists_mask'][idx2]
+                
+                # Create normalized position mappings
+                positions1, values1 = self._create_normalized_position_mapping(
+                    filtration_params1, sequence1, mask1
+                )
+                positions2, values2 = self._create_normalized_position_mapping(
+                    filtration_params2, sequence2, mask2
+                )
+                
+                # Interpolate at common sampling points
+                if len(positions1) > 0:
+                    interp1 = self._interpolate_eigenvalue_sequence(
+                        positions1, values1, sampling_points
+                    )
+                else:
+                    # No valid eigenvalues for this index in model 1
+                    interp1 = np.full_like(sampling_points, self.min_eigenvalue_threshold)
+                
+                if len(positions2) > 0:
+                    interp2 = self._interpolate_eigenvalue_sequence(
+                        positions2, values2, sampling_points
+                    )
+                else:
+                    # No valid eigenvalues for this index in model 2
+                    interp2 = np.full_like(sampling_points, self.min_eigenvalue_threshold)
+                
+                seq1_interpolated.append(interp1)
+                seq2_interpolated.append(interp2)
+            
+            # Convert to numpy arrays with shape (n_steps, n_features)
+            if seq1_interpolated:
+                seq1 = np.column_stack(seq1_interpolated)
+                seq2 = np.column_stack(seq2_interpolated)
+            else:
+                # No eigenvalues to compare
+                seq1 = np.empty((len(sampling_points), 0))
+                seq2 = np.empty((len(sampling_points), 0))
+            
+            logger.info(f"Interpolated sequences: {seq1.shape}, {seq2.shape} "
+                       f"({len(matches)} matched eigenvalues, {len(sampling_points)} time points)")
+            
+            return seq1, seq2
+            
+        except Exception as e:
+            logger.error(f"Failed to extract interpolated multivariate sequences: {e}")
+            raise ComputationError(f"Interpolated sequence extraction failed: {e}")
     
     def _compute_univariate_dtw(self, seq1: np.ndarray, seq2: np.ndarray) -> Tuple[float, List[Tuple[int, int]]]:
         """Compute univariate DTW distance and alignment."""

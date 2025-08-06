@@ -308,11 +308,25 @@ if __name__ == "__main__":
             max_iter=100, 
             quasi_sheaf_tolerance=0.05,
             use_gpu=False  # Force CPU for compatibility
+        ),
+        'adaptive': GWConfig(
+            epsilon=0.05,  # Base epsilon
+            max_iter=100,
+            tolerance=1e-8,
+            quasi_sheaf_tolerance=0.08,
+            # Enable adaptive epsilon
+            adaptive_epsilon=True,
+            base_epsilon=0.05,
+            reference_n=50,  # Reference sample size
+            epsilon_scaling_method='sqrt',
+            epsilon_min=0.01,
+            epsilon_max=0.2,
+            validate_couplings=True  # Monitor coupling quality
         )
     }
     
     # Choose configuration
-    selected_config = 'accurate'  # Use accurate for quality results
+    selected_config = 'adaptive'  # Use adaptive epsilon scaling
     gw_config = gw_configs[selected_config]
     
     print(f"Selected GW configuration: {selected_config}")
@@ -321,6 +335,12 @@ if __name__ == "__main__":
     print(f"  - Tolerance: {gw_config.tolerance}")
     print(f"  - Quasi-sheaf tolerance: {gw_config.quasi_sheaf_tolerance}")
     print(f"  - Validation: couplings={gw_config.validate_couplings}, costs={gw_config.validate_costs}")
+    if gw_config.adaptive_epsilon:
+        print(f"  - Adaptive epsilon: ENABLED")
+        print(f"    - Base epsilon: {gw_config.base_epsilon}")
+        print(f"    - Reference n: {gw_config.reference_n}")
+        print(f"    - Scaling method: {gw_config.epsilon_scaling_method}")
+        print(f"    - Epsilon range: [{gw_config.epsilon_min}, {gw_config.epsilon_max}]")
 
     # === Load Models ===
     print("\n=== Loading Models ===")

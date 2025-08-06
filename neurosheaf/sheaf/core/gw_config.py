@@ -61,6 +61,14 @@ class GWConfig:
     # Memory management
     max_cache_size_gb: float = 2.0           # Maximum cache size in GB
     
+    # Adaptive epsilon parameters
+    adaptive_epsilon: bool = False             # Enable adaptive scaling (default False for backward compatibility)
+    base_epsilon: float = 0.1                  # Base epsilon for reference size (matches current default)
+    reference_n: float = 50.0                  # Reference sample size (current working size)
+    epsilon_scaling_method: str = 'sqrt'       # Scaling method: 'sqrt' (recommended by theory)
+    epsilon_min: float = 0.01                  # Minimum allowed epsilon
+    epsilon_max: float = 0.5                   # Maximum allowed epsilon
+    
     def validate(self) -> None:
         """Validate configuration parameters.
         
@@ -87,6 +95,26 @@ class GWConfig:
             
         if self.coupling_eps <= 0:
             raise ValueError(f"coupling_eps must be positive, got {self.coupling_eps}")
+            
+        # Validate adaptive epsilon parameters
+        if self.adaptive_epsilon:
+            if self.base_epsilon <= 0:
+                raise ValueError(f"base_epsilon must be positive, got {self.base_epsilon}")
+                
+            if self.reference_n <= 0:
+                raise ValueError(f"reference_n must be positive, got {self.reference_n}")
+                
+            if self.epsilon_min <= 0:
+                raise ValueError(f"epsilon_min must be positive, got {self.epsilon_min}")
+                
+            if self.epsilon_max <= 0:
+                raise ValueError(f"epsilon_max must be positive, got {self.epsilon_max}")
+                
+            if self.epsilon_min > self.epsilon_max:
+                raise ValueError(f"epsilon_min ({self.epsilon_min}) must be <= epsilon_max ({self.epsilon_max})")
+                
+            if self.epsilon_scaling_method not in ['sqrt']:
+                raise ValueError(f"epsilon_scaling_method must be 'sqrt', got {self.epsilon_scaling_method}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for serialization."""
@@ -104,6 +132,12 @@ class GWConfig:
             'cost_matrix_eps': self.cost_matrix_eps,
             'coupling_eps': self.coupling_eps,
             'max_cache_size_gb': self.max_cache_size_gb,
+            'adaptive_epsilon': self.adaptive_epsilon,
+            'base_epsilon': self.base_epsilon,
+            'reference_n': self.reference_n,
+            'epsilon_scaling_method': self.epsilon_scaling_method,
+            'epsilon_min': self.epsilon_min,
+            'epsilon_max': self.epsilon_max,
         }
     
     @classmethod

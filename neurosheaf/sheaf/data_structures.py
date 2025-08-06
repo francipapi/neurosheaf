@@ -287,6 +287,12 @@ class Sheaf:
             if metrics['is_identity']:
                 identity_count += 1
         
+        # Compute restriction metrics early for use in detailed stalk display
+        restriction_metrics = {}
+        for edge, restriction in self.restrictions.items():
+            metrics = self._compute_restriction_metrics(restriction)
+            restriction_metrics[edge] = metrics
+        
         # Summary statistics
         print(f"  Total stalks: {len(self.stalks)}")
         print(f"  Identity stalks: {identity_count}/{len(self.stalks)}")
@@ -337,14 +343,12 @@ class Sheaf:
         print("\n4. RESTRICTION MAP METRICS:")
         print("-"*40)
         
-        restriction_metrics = {}
+        # restriction_metrics already computed in section 3
         all_weights = []
         all_conditions = []
         all_restriction_ranks = []
         
-        for edge, restriction in self.restrictions.items():
-            metrics = self._compute_restriction_metrics(restriction)
-            restriction_metrics[edge] = metrics
+        for edge, metrics in restriction_metrics.items():
             all_weights.append(metrics['frobenius_norm'])
             if metrics['condition_number'] is not None and metrics['condition_number'] < float('inf'):
                 all_conditions.append(metrics['condition_number'])
