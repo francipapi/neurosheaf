@@ -32,7 +32,7 @@ logging.getLogger('neurosheaf').setLevel(logging.DEBUG)
 
 
 # Set random seeds for reproducibility
-random_seed = 5670
+random_seed = 30
 torch.manual_seed(random_seed)
 np.random.seed(random_seed)
 if torch.cuda.is_available():
@@ -432,12 +432,46 @@ print(f"Generated data shape: {data.shape}")
 # Use the high-level API instead of direct sheaf building
 print("\n=== Building Sheaf Using High-Level API ===")
 analyzer = NeurosheafAnalyzer(device='cpu')
-analysis = analyzer.analyze(model, data, method='gromov_wasserstein', gw_config=gw_config)
+
+# First run with original configuration for comparison
+print("Running analysis WITHOUT layer filtering (original approach):")
+analysis_original = analyzer.analyze(
+    model, data, 
+    method='gromov_wasserstein', 
+    gw_config=gw_config,
+    exclude_final_single_output=False
+)
+sheaf_original = analysis_original['sheaf']
+
+print(f"Original approach: {len(sheaf_original.stalks)} stalks, {len(sheaf_original.restrictions)} restrictions")
+
+# Now run with layer filtering to prevent degeneracy
+print("\nRunning analysis WITH layer filtering (exclude final single-output layers):")
+analysis = analyzer.analyze(
+    model, data, 
+    method='gromov_wasserstein', 
+    gw_config=gw_config,
+    exclude_final_single_output=True  # NEW: Enable layer filtering to reduce degeneracy
+)
 sheaf = analysis['sheaf']
 
-print(f"Sheaf constructed: {len(sheaf.stalks)} stalks, {len(sheaf.restrictions)} restrictions")
+print(f"Filtered approach: {len(sheaf.stalks)} stalks, {len(sheaf.restrictions)} restrictions")
 
-# Use the new detailed print method
+# Compare the results
+print(f"\n=== Comparison of Approaches ===")
+print(f"Original (no filtering):  {len(sheaf_original.stalks)} stalks, {len(sheaf_original.restrictions)} restrictions")
+print(f"Filtered (exclude final): {len(sheaf.stalks)} stalks, {len(sheaf.restrictions)} restrictions")
+print(f"Difference: {len(sheaf.restrictions) - len(sheaf_original.restrictions):+d} restrictions")
+
+if len(sheaf.restrictions) > len(sheaf_original.restrictions):
+    print("✅ Layer filtering IMPROVED restriction map success rate!")
+elif len(sheaf.restrictions) < len(sheaf_original.restrictions):
+    print("⚠️  Layer filtering reduced restrictions (expected, removed degenerate final layer)")
+else:
+    print("➡️  Layer filtering had no impact on restriction count")
+
+# Use the new detailed print method for the filtered result
+print(f"\n=== Filtered Sheaf Details ===")
 sheaf.print_detailed_summary(max_items=5, verbosity='detailed')
 
 # Run spectral analysis using the analyzer

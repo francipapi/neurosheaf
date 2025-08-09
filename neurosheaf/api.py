@@ -105,7 +105,8 @@ class NeurosheafAnalyzer:
         directionality_parameter: float = 0.25,
         preserve_eigenvalues: Optional[bool] = None,
         use_gram_regularization: bool = False,
-        regularization_config: Optional[Dict[str, Any]] = None
+        regularization_config: Optional[Dict[str, Any]] = None,
+        exclude_final_single_output: bool = False
     ) -> Dict[str, Any]:
         """Perform complete neurosheaf analysis.
         
@@ -126,6 +127,7 @@ class NeurosheafAnalyzer:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization (if None, uses defaults)
+            exclude_final_single_output: Whether to exclude final layers with single outputs to prevent GW degeneracy
             
         Returns:
             Dictionary containing analysis results:
@@ -139,6 +141,7 @@ class NeurosheafAnalyzer:
                 - 'gw_config': GW configuration (if method='gromov_wasserstein')
                 - 'directionality_parameter': q parameter (if directed)
                 - 'preserve_eigenvalues': eigenvalue preservation setting
+                - 'exclude_final_single_output': single-output layer exclusion setting
                 
         Raises:
             ValidationError: If input validation fails
@@ -187,7 +190,7 @@ class NeurosheafAnalyzer:
             else:
                 return self._analyze_undirected(
                     model, data, method, gw_config, preserve_eigenvalues, 
-                    use_gram_regularization, regularization_config
+                    use_gram_regularization, regularization_config, exclude_final_single_output
                 )
         except Exception as e:
             self.logger.error(f"Analysis failed: {e}")
@@ -349,7 +352,7 @@ class NeurosheafAnalyzer:
     
     def _analyze_undirected(self, model: nn.Module, data: torch.Tensor, method: str, gw_config: Optional[GWConfig],
                            preserve_eigenvalues: Optional[bool] = None, use_gram_regularization: bool = False, 
-                           regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                           regularization_config: Optional[Dict[str, Any]] = None, exclude_final_single_output: bool = False) -> Dict[str, Any]:
         """Perform undirected sheaf analysis with method routing.
         
         Routes to appropriate sheaf construction method based on the method parameter.
@@ -363,6 +366,7 @@ class NeurosheafAnalyzer:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
+            exclude_final_single_output: Whether to exclude final layers with single outputs to prevent GW degeneracy
             
         Returns:
             Dictionary with undirected analysis results
@@ -383,7 +387,10 @@ class NeurosheafAnalyzer:
         
         # Build sheaf with appropriate method
         # Use the device determined at the API level (CPU if eigenvalue preservation on MPS)
-        sheaf_builder = SheafBuilder(restriction_method=restriction_method)
+        sheaf_builder = SheafBuilder(
+            restriction_method=restriction_method,
+            exclude_final_single_output=exclude_final_single_output
+        )
         sheaf = sheaf_builder.build_from_activations(
             model, data,
             preserve_eigenvalues=preserve_eigenvalues,
@@ -402,6 +409,7 @@ class NeurosheafAnalyzer:
             'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
+            'exclude_final_single_output': exclude_final_single_output,
             'construction_time': construction_time,
             'device_info': self._get_device_info(),
             'memory_info': self._get_memory_info(),

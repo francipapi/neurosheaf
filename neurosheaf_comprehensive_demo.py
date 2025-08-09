@@ -498,7 +498,8 @@ class SheafAnalyzer:
             model, 
             self.model_manager.input_data, 
             method='gromov_wasserstein',
-            gw_config=self.gw_config
+            gw_config=self.gw_config,
+            exclude_final_single_output=True
         )
         
         sheaf = analysis['sheaf']

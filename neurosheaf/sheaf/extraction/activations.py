@@ -133,20 +133,142 @@ class FXActivationExtractor:
         return _activation_storage.copy()
 
 
-def extract_activations_fx(model: nn.Module, input_tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
+def create_single_output_exclusion_filter(model: nn.Module, exclude_final_single_output: bool = True) -> Optional[Callable]:
+    """
+    Create a node filter that excludes final layers with single outputs to prevent GW degeneracy.
+    
+    This function analyzes the model architecture and creates a filter that excludes:
+    1. Linear layers with output dimension = 1 that are near the final output
+    2. Activation functions applied after single-output layers (like Sigmoid on classification output)
+    3. Any other operations that produce single-dimensional outputs at the end of the network
+    
+    Args:
+        model: The PyTorch model to analyze
+        exclude_final_single_output: Whether to enable the filtering
+        
+    Returns:
+        A node filter function if filtering is enabled, None otherwise
+    """
+    if not exclude_final_single_output:
+        return None
+    
+    # Trace the model to analyze its structure
+    traced = fx.symbolic_trace(model)
+    
+    # Find nodes that should be excluded
+    excluded_nodes = set()
+    nodes_list = list(traced.graph.nodes)
+    
+    # Work backwards from the output to identify problematic final layers
+    output_node = None
+    for node in reversed(nodes_list):
+        if node.op == 'output':
+            output_node = node
+            break
+    
+    if not output_node:
+        return None
+    
+    # Track nodes that produce single-dimensional outputs near the end
+    final_region_depth = 3  # Look at the last few layers
+    
+    for i, node in enumerate(reversed(nodes_list)):
+        if i >= final_region_depth:
+            break
+            
+        if node.op == 'output':
+            continue
+            
+        # Check if this is a linear layer with single output
+        should_exclude = False
+        
+        if node.op == 'call_module':
+            # Get the actual module
+            try:
+                module_name = str(node.target).replace('layers.', '').replace('layers_', '')
+                module = None
+                
+                # Try to get the module from the model
+                for name, mod in model.named_modules():
+                    if name == node.target or name.replace('.', '_') == node.target or str(node.target) in name:
+                        module = mod
+                        break
+                
+                # Check if it's a linear layer with single output
+                if isinstance(module, nn.Linear) and module.out_features == 1:
+                    should_exclude = True
+                    logger.info(f"Excluding single-output linear layer: {node.name} (out_features=1)")
+                    
+                # Check if it's an activation after a linear layer
+                elif isinstance(module, (nn.Sigmoid, nn.Tanh)) and i < final_region_depth - 1:
+                    # Look at the previous node to see if it was a single-output linear
+                    prev_node_idx = len(nodes_list) - 1 - i - 1
+                    if prev_node_idx >= 0:
+                        prev_node = nodes_list[prev_node_idx]
+                        if prev_node.name in excluded_nodes:
+                            should_exclude = True
+                            logger.info(f"Excluding activation after single-output layer: {node.name}")
+                            
+            except Exception as e:
+                logger.debug(f"Could not analyze module for node {node.name}: {e}")
+                
+        elif node.op == 'call_function':
+            # Check for functional activations that might be applied to single outputs
+            if node.target in [torch.sigmoid, torch.tanh, nn.functional.sigmoid, nn.functional.tanh]:
+                # Check if input comes from an excluded node
+                for arg in node.args:
+                    if hasattr(arg, 'name') and arg.name in excluded_nodes:
+                        should_exclude = True
+                        logger.info(f"Excluding functional activation after single-output: {node.name}")
+                        break
+        
+        if should_exclude:
+            excluded_nodes.add(node.name)
+    
+    if excluded_nodes:
+        logger.info(f"Created exclusion filter for {len(excluded_nodes)} nodes: {list(excluded_nodes)}")
+        
+        def node_filter(node: fx.Node) -> bool:
+            """Filter function that excludes problematic final layers."""
+            # Use default activation detection but exclude problematic nodes
+            if node.name in excluded_nodes:
+                return False
+                
+            # Use the default activation detection for all other nodes
+            extractor = FXActivationExtractor()
+            return extractor._is_activation_node(node)
+        
+        return node_filter
+    else:
+        logger.info("No single-output final layers detected, no exclusion filter needed")
+        return None
+
+
+def extract_activations_fx(model: nn.Module, input_tensor: torch.Tensor, 
+                          exclude_final_single_output: bool = False) -> Dict[str, torch.Tensor]:
     """
     Convenience function to extract activations using the FXActivationExtractor.
 
     Args:
         model: The PyTorch model.
         input_tensor: An example input tensor to run the forward pass.
+        exclude_final_single_output: Whether to exclude final single-output layers to prevent degeneracy.
 
     Returns:
         A dictionary of activations, keyed by their FX graph node names.
     """
     logger.info("Extracting activations using FX-based tracer...")
+    
+    # Create exclusion filter if requested
+    node_filter = create_single_output_exclusion_filter(model, exclude_final_single_output)
+    
     extractor = FXActivationExtractor()
-    activations = extractor.capture_activations(model, input_tensor)
+    activations = extractor.capture_activations(model, input_tensor, node_filter=node_filter)
+    
     logger.info(f"Successfully extracted {len(activations)} activations.")
+    
+    if exclude_final_single_output and node_filter:
+        logger.info("Single-output final layer exclusion was applied")
+    
     logger.debug(f"Activation keys: {list(activations.keys())[:10]}...")  # Show first 10 keys
     return activations

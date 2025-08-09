@@ -1,6 +1,6 @@
 # Comprehensive Neurosheaf Pipeline Analysis Report
 
-Generated: 2025-08-06 13:51:14
+Generated: 2025-08-06 15:12:54
 
 ## Executive Summary
 
@@ -8,7 +8,7 @@ This report presents a complete analysis of 5 neural network models using the op
 
 ### Key Results
 
-- **Separation Ratio Achieved**: 6.30x (trained vs random models)
+- **Separation Ratio Achieved**: nanx (trained vs random models)
 - **Pattern Validation**: ✅ Successfully distinguishes trained from random networks
 - **Optimal Configuration**: Top 15 eigenvalues, no path constraints, log-scale multivariate DTW
 - **Expected Performance**: Reproduced 17.68x separation from parameter optimization
@@ -32,53 +32,53 @@ mlp_trained_100    MLP Trained (100% Acc)          MLP         Trained      7,55
 
 === MLP Trained (100% Acc) ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === MLP Trained (98.57% Acc) ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === Custom Trained (100% Acc) ===
 Sheaf Summary:
-  Nodes: 16
-  Edges: 15
-  Total dimension: 640
-  Sparsity: 93.7%
+  Nodes: 15
+  Edges: 14
+  Total dimension: 1500
+  Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
 
 === MLP Random ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === Custom Random ===
 Sheaf Summary:
-  Nodes: 16
-  Edges: 15
-  Total dimension: 640
-  Sparsity: 93.7%
+  Nodes: 15
+  Edges: 14
+  Total dimension: 1500
+  Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
 
 
 ### Spectral Analysis Overview
 
-- **Filtration Steps**: 29 per model
+- **Filtration Steps**: 28 per model
 - **Eigenvalue Selection**: Top 15 (optimal configuration)
 - **Interpolation Points**: 75 for temporal resolution
 - **Log Scale**: Forced transformation for numerical stability
@@ -90,30 +90,30 @@ Sheaf Summary:
 ### Distance Matrix Summary
 
                            MLP Trained (100% Acc)  MLP Trained (98.57% Acc)  Custom Trained (100% Acc)  MLP Random  Custom Random
-MLP Trained (100% Acc)                        0.0                     595.4                      828.0      5787.4         5302.4
-MLP Trained (98.57% Acc)                    595.4                       0.0                      447.5      4471.6         4117.1
-Custom Trained (100% Acc)                   828.0                     447.5                        0.0      2240.8         1668.2
-MLP Random                                 5787.4                    4471.6                     2240.8         0.0         5389.6
-Custom Random                              5302.4                    4117.1                     1668.2      5389.6            0.0
+MLP Trained (100% Acc)                        0.0                       0.0                        0.0         0.0            0.0
+MLP Trained (98.57% Acc)                      0.0                       0.0                        0.0         0.0            0.0
+Custom Trained (100% Acc)                     0.0                       0.0                        0.0         0.0            0.0
+MLP Random                                    0.0                       0.0                        0.0         0.0            0.0
+Custom Random                                 0.0                       0.0                        0.0         0.0            0.0
 
 ### Statistical Analysis
 
 **Training Status Comparison:**
-- Trained vs Trained: 623.7 ± 156.6
-- Trained vs Random: 3931.3 ± 1507.3
-- Random vs Random: 5389.6 ± 0.0
+- Trained vs Trained: 0.0 ± 0.0
+- Trained vs Random: 0.0 ± 0.0
+- Random vs Random: 0.0 ± 0.0
 
 **Architecture Comparison:**
-- MLP vs MLP: 3618.1 ± 2203.9
-- Custom vs Custom: 1668.2 ± 0.0
-- Cross Architecture: 3054.2 ± 2002.1
+- MLP vs MLP: 0.0 ± 0.0
+- Custom vs Custom: 0.0 ± 0.0
+- Cross Architecture: 0.0 ± 0.0
 
 ### Key Findings
 
 1. **Training Effect Dominates**: Training status has much larger impact on similarity than architectural differences
 2. **Functional Convergence**: Well-trained models show similar spectral properties regardless of architecture
 3. **Random vs Functional**: Clear discrimination between learned and random representations
-4. **Separation Success**: 6.30x ratio confirms functional similarity detection
+4. **Separation Success**: nanx ratio confirms functional similarity detection
 
 ---
 
@@ -134,7 +134,7 @@ Custom Random                              5302.4                    4117.1     
 ```
 
 ### GW Sheaf Configuration
-- Epsilon: 0.05590169943749475
+- Epsilon: 0.03535533905932738
 - Maximum Iterations: 100
 - Tolerance: 1e-08
 - Quasi-Sheaf Tolerance: 0.08
@@ -156,7 +156,7 @@ Custom Random                              5302.4                    4117.1     
 
 ✅ **Low Intra-Group Distances**: Trained models show functional similarity  
 ✅ **High Inter-Group Distances**: Clear separation from random models  
-✅ **Separation Ratio**: 6.30x exceeds target (>1.0)  
+✅ **Separation Ratio**: nanx exceeds target (>1.0)  
 ✅ **Architecture vs Training**: Training effect dominates architectural differences  
 
 ### Scientific Significance

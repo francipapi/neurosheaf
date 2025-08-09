@@ -53,12 +53,14 @@ class SheafBuilder:
     
     def __init__(self, 
                  preserve_eigenvalues: bool = False,
-                 restriction_method: str = 'scaled_procrustes'):
+                 restriction_method: str = 'scaled_procrustes',
+                 exclude_final_single_output: bool = False):
         """Initializes the sheaf builder.
         
         Args:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (enables Hodge formulation)
             restriction_method: Method for computing restriction maps ('scaled_procrustes', 'gromov_wasserstein', 'whitened_procrustes')
+            exclude_final_single_output: Whether to exclude final layers with single outputs to prevent GW degeneracy
             
         Raises:
             ValueError: If restriction_method is not supported
@@ -68,6 +70,7 @@ class SheafBuilder:
                            f"Supported methods: {self.SUPPORTED_METHODS}")
         
         self.restriction_method = restriction_method
+        self.exclude_final_single_output = exclude_final_single_output
         self.poset_extractor = FXPosetExtractor()
         self.whitening_processor = WhiteningProcessor(preserve_eigenvalues=preserve_eigenvalues)
         # Pass the whitening processor to restriction manager
@@ -78,7 +81,8 @@ class SheafBuilder:
         self._gw_restriction_manager = None
         
         logger.info(f"SheafBuilder initialized: method={restriction_method}, "
-                   f"preserve_eigenvalues={preserve_eigenvalues}")
+                   f"preserve_eigenvalues={preserve_eigenvalues}, "
+                   f"exclude_final_single_output={exclude_final_single_output}")
 
     def build_from_activations(self, 
                                 model: nn.Module, 
@@ -146,7 +150,8 @@ class SheafBuilder:
         try:
             # 1. Extract activations using the robust FX-based method.
             # The keys of this dictionary are now the ground truth.
-            activations = extract_activations_fx(model, input_tensor)
+            activations = extract_activations_fx(model, input_tensor, 
+                                               exclude_final_single_output=self.exclude_final_single_output)
             
             # 2. Extract poset filtered by the keys of our new activation dict.
             available_activations = set(activations.keys())
@@ -342,7 +347,8 @@ class SheafBuilder:
             
             # 1. Extract activations using FX-based method
             logger.info("Extracting activations using FX tracer")
-            activations = extract_activations_fx(model, input_tensor)
+            activations = extract_activations_fx(model, input_tensor, 
+                                               exclude_final_single_output=self.exclude_final_single_output)
             
             # 2. Extract poset filtered by available activations
             available_activations = set(activations.keys())

@@ -3,45 +3,45 @@ DETAILED SHEAF STRUCTURE DESCRIPTIONS
 
 === MLP Trained (100% Acc) ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === MLP Trained (98.57% Acc) ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === Custom Trained (100% Acc) ===
 Sheaf Summary:
-  Nodes: 16
-  Edges: 15
-  Total dimension: 640
-  Sparsity: 93.7%
+  Nodes: 15
+  Edges: 14
+  Total dimension: 1500
+  Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
 
 === MLP Random ===
 Sheaf Summary:
-  Nodes: 26
-  Edges: 25
-  Total dimension: 1040
-  Sparsity: 96.1%
+  Nodes: 25
+  Edges: 24
+  Total dimension: 2500
+  Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
 
 === Custom Random ===
 Sheaf Summary:
-  Nodes: 16
-  Edges: 15
-  Total dimension: 640
-  Sparsity: 93.7%
+  Nodes: 15
+  Edges: 14
+  Total dimension: 1500
+  Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein

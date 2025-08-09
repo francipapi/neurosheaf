@@ -67,26 +67,36 @@ class FiltrationDTW:
     
     def __init__(self,
                  method: str = 'auto',
-                 constraint_band: float = 0.1,
+                 constraint_band: float = 0.05,
                  eigenvalue_weight: float = 1.0,
                  structural_weight: float = 0.0,
-                 min_eigenvalue_threshold: float = 1e-12,
-                 normalization_scheme: str = 'range_aware',
-                 zero_sequence_penalty: float = 10.0):
+                 min_eigenvalue_threshold: float = 1e-14,
+                 normalization_scheme: str = 'average_cost',
+                 zero_sequence_penalty: float = 10.0,
+                 use_log_scale: bool = True,
+                 use_persistence_weighting: bool = True,
+                 matching_strategy: str = 'correlation',
+                 eigen_ordering: str = 'descending',
+                 use_zscore: bool = False):
         """Initialize FiltrationDTW.
         
         Args:
             method: DTW implementation ('dtaidistance', 'tslearn', 'dtw-python', 'auto')
-            constraint_band: Sakoe-Chiba band constraint (0.0-1.0, 0.0 = no constraint)
+            constraint_band: Sakoe-Chiba band constraint (0.0-1.0, default: 0.05)
             eigenvalue_weight: Weight for eigenvalue magnitude differences (default: 1.0 for pure functional similarity)
             structural_weight: Weight for structural changes (default: 0.0 to ignore architectural differences)
             min_eigenvalue_threshold: Minimum eigenvalue threshold for numerical stability
+            normalization_scheme: Normalization method ('average_cost', 'length_aware', 'range_aware', 'std_aware', 'mad_aware')
+            zero_sequence_penalty: Penalty for zero sequences
+            use_log_scale: Whether to apply log scale transformation (default: True)
+            use_persistence_weighting: Whether to weight by persistence (default: True)
+            matching_strategy: Eigenvalue matching strategy ('correlation' or 'position')
+            eigen_ordering: Eigenvalue ordering ('descending' or 'ascending')
+            use_zscore: Whether to apply z-score normalization (default: False)
             
         Note:
-            Default configuration (eigenvalue_weight=1.0, structural_weight=0.0) provides pure
-            functional similarity measurement, ignoring architectural differences between models.
-            This is ideal for comparing functional similarity across different architectures
-            (e.g., MLP vs CNN vs Custom models).
+            Default configuration provides optimal separation between trained and random models
+            with robust preprocessing and correlation-based eigenvalue matching.
         """
         self.method = self._select_method(method)
         self.constraint_band = constraint_band
@@ -95,6 +105,11 @@ class FiltrationDTW:
         self.min_eigenvalue_threshold = min_eigenvalue_threshold
         self.normalization_scheme = normalization_scheme
         self.zero_sequence_penalty = zero_sequence_penalty
+        self.use_log_scale = use_log_scale
+        self.use_persistence_weighting = use_persistence_weighting
+        self.matching_strategy = matching_strategy
+        self.eigen_ordering = eigen_ordering
+        self.use_zscore = use_zscore
         
         # Validate weights - allow pure functional similarity
         if eigenvalue_weight < 0.0 or structural_weight < 0.0:
@@ -132,68 +147,74 @@ class FiltrationDTW:
         
         return method
     
-    def _compute_enhanced_normalization(self, seq1: np.ndarray, seq2: np.ndarray, raw_distance: float) -> float:
-        """Compute enhanced normalization with multivariate awareness and sensitivity preservation."""
+    def _compute_normalized_distance(self, seq1: np.ndarray, seq2: np.ndarray, 
+                                    raw_distance: float, alignment: List[Tuple[int, int]]) -> float:
+        """Compute normalized distance using selected scheme.
         
-        # Detect problematic patterns
-        issues = self._detect_sequence_issues(seq1, seq2)
-        
-        # Check if this is multivariate or univariate
-        is_multivariate = seq1.ndim > 1 and seq1.shape[1] > 1
-        
-        if is_multivariate:
-            # Multivariate normalization: account for dimensionality and sequence length
-            n_features = seq1.shape[1]
-            avg_seq_length = (len(seq1) + len(seq2)) / 2
+        Args:
+            seq1: First sequence
+            seq2: Second sequence
+            raw_distance: Raw DTW distance
+            alignment: DTW alignment path
             
-            # Scale factor based on sequence properties
-            seq1_flat = seq1.flatten()
-            seq2_flat = seq2.flatten()
-            combined_seq = np.concatenate([seq1_flat, seq2_flat])
-            
-            # Use range-based normalization for multivariate sequences
-            seq_range = np.max(combined_seq) - np.min(combined_seq)
-            if seq_range > 1e-12:
-                # Normalize by range * sqrt(dimensions) * avg_length to account for multivariate scaling
-                base_scale = seq_range * np.sqrt(n_features) * np.sqrt(avg_seq_length) / 10.0
+        Returns:
+            Normalized distance
+        """
+        if self.normalization_scheme == 'average_cost':
+            # Distance normalized by alignment path length
+            if alignment and len(alignment) > 0:
+                normalized = raw_distance / len(alignment)
             else:
-                base_scale = avg_seq_length  # Fallback for constant sequences
+                normalized = raw_distance / max(len(seq1), len(seq2))
                 
-            normalized_distance = raw_distance / base_scale
+        elif self.normalization_scheme == 'length_aware':
+            # Distance with mild length adjustment
+            max_len = max(len(seq1), len(seq2))
+            normalized = raw_distance / (max_len ** 0.1 + 1.0)
             
-        else:
-            # Univariate normalization: use robust statistics
+        elif self.normalization_scheme == 'range_aware':
+            # Distance normalized by average range
             seq1_flat = seq1.flatten() if seq1.ndim > 1 else seq1
             seq2_flat = seq2.flatten() if seq2.ndim > 1 else seq2
+            range1 = np.max(seq1_flat) - np.min(seq1_flat)
+            range2 = np.max(seq2_flat) - np.min(seq2_flat)
+            avg_range = (range1 + range2) / 2
             
-            # Use median absolute deviation for robust scaling
-            combined_seq = np.concatenate([seq1_flat, seq2_flat])
-            median_val = np.median(combined_seq)
-            mad = np.median(np.abs(combined_seq - median_val))
-            
-            # Robust scale factor (avoid division by zero)
-            if mad > 1e-12:
-                scale_factor = mad * 1.4826  # MAD to standard deviation conversion
+            if avg_range > 1e-12:
+                normalized = raw_distance / avg_range
             else:
-                scale_factor = np.std(combined_seq)
-                if scale_factor < 1e-12:
-                    scale_factor = max(len(seq1), len(seq2))  # Fallback based on sequence length
+                normalized = raw_distance
+                
+        elif self.normalization_scheme == 'std_aware':
+            # Distance normalized by standard deviation
+            combined = np.concatenate([seq1.flatten(), seq2.flatten()])
+            std = np.std(combined)
             
-            normalized_distance = raw_distance / scale_factor
+            if std > 1e-12:
+                normalized = raw_distance / std
+            else:
+                normalized = raw_distance
+                
+        elif self.normalization_scheme == 'mad_aware':
+            # Distance normalized by median absolute deviation
+            combined = np.concatenate([seq1.flatten(), seq2.flatten()])
+            median_val = np.median(combined)
+            mad = np.median(np.abs(combined - median_val))
+            
+            if mad > 1e-12:
+                normalized = raw_distance / (mad * 1.4826)  # MAD to std conversion
+            else:
+                normalized = raw_distance
+        else:
+            # Fallback to average cost
+            normalized = raw_distance / len(alignment) if alignment else raw_distance
+            
+        # Ensure non-negative
+        normalized = max(0.0, normalized)
         
-        # Apply sequence-specific adjustments
-        adjusted_normalized = self._apply_normalized_adjustments(normalized_distance, issues)
+        logger.debug(f"Normalization ({self.normalization_scheme}): raw={raw_distance:.4f}, normalized={normalized:.4f}")
         
-        # Only ensure non-negative result
-        final_distance = max(0.0, adjusted_normalized)
-        
-        # Diagnostic logging for debugging DTW sensitivity issues
-        multivar_info = f"multivariate({seq1.shape[1]}D)" if is_multivariate else "univariate"
-        logger.debug(f"DTW normalization ({multivar_info}): raw={raw_distance:.4f}, "
-                    f"normalized={normalized_distance:.4f}, adjusted={adjusted_normalized:.4f}, "
-                    f"final={final_distance:.4f}")
-        
-        return final_distance
+        return normalized
     
     def _detect_sequence_issues(self, seq1: np.ndarray, seq2: np.ndarray) -> Dict[str, float]:
         """Detect problematic patterns in sequences."""
@@ -245,19 +266,26 @@ class FiltrationDTW:
             else:
                 return 1.0  # Different constants = maximum distance
         
-        # Handle sequences with many zeros (CORRECTED: both having zeros means they're similar)
+        # Handle sequences with many zeros - focus on PATTERN differences, not just zero counts
         min_zero_ratio = min(issues['zero_seq1'], issues['zero_seq2'])
         max_zero_ratio = max(issues['zero_seq1'], issues['zero_seq2'])
+        zero_ratio_diff = abs(issues['zero_seq1'] - issues['zero_seq2'])
         
-        # If both sequences have many zeros, they should be more similar
-        if min_zero_ratio > 0.5 and max_zero_ratio > 0.7:
-            # Both sequences are mostly zeros - reduce distance (increase similarity)
-            zero_similarity_bonus = min(0.3, min_zero_ratio * 0.5)
-            adjusted_distance = max(0.0, adjusted_distance - zero_similarity_bonus)
-        elif max_zero_ratio > 0.8 and min_zero_ratio < 0.1:
-            # One sequence is mostly zeros, other is not - increase distance
-            zero_difference_penalty = min(0.2, (max_zero_ratio - min_zero_ratio) * 0.3)
-            adjusted_distance += zero_difference_penalty
+        # Key insight: Having many zeros doesn't mean similarity - it matters WHERE the zeros occur
+        # Only adjust distance if there's a significant difference in zero patterns
+        if zero_ratio_diff > 0.5:
+            # Significant difference in zero patterns - increase distance
+            # This indicates structurally different eigenvalue collapse patterns
+            adjusted_distance += zero_ratio_diff * 0.2
+        elif zero_ratio_diff > 0.3:
+            # Moderate difference in zero patterns
+            adjusted_distance += zero_ratio_diff * 0.1
+        
+        # Special case: if both sequences are almost entirely zeros (>90%), 
+        # they might be degenerate - slightly reduce distance but not too much
+        if min_zero_ratio > 0.9 and max_zero_ratio > 0.9:
+            # Both sequences are degenerate - small similarity bonus
+            adjusted_distance = max(0.0, adjusted_distance - 0.05)
         
         # Handle artificially high correlation with low distance
         if issues['correlation'] > 0.98 and normalized_distance < 1e-6:
@@ -368,6 +396,144 @@ class FiltrationDTW:
         # Default to current scheme
         return normalizations['current']
     
+    def _compute_persistence_weights(self, 
+                                    evolution: List[torch.Tensor], 
+                                    threshold_multiplier: float = 10.0) -> np.ndarray:
+        """Compute persistence weights for eigenvalues based on how long they persist.
+        
+        Args:
+            evolution: Eigenvalue evolution sequence
+            threshold_multiplier: Multiplier for min_eigenvalue_threshold to determine persistence
+            
+        Returns:
+            Array of persistence weights for each time step
+        """
+        if not evolution:
+            return np.ones(1)
+        
+        # Find max number of eigenvalues
+        max_eigenvalues = max(len(e) for e in evolution)
+        threshold = self.min_eigenvalue_threshold * threshold_multiplier
+        
+        # Compute persistence score for each eigenvalue index
+        persistence_scores = []
+        for eigen_idx in range(max_eigenvalues):
+            above_threshold_count = 0
+            total_count = 0
+            
+            for eigenvals in evolution:
+                if eigen_idx < len(eigenvals):
+                    total_count += 1
+                    if eigenvals[eigen_idx].item() > threshold:
+                        above_threshold_count += 1
+            
+            if total_count > 0:
+                persistence_scores.append(above_threshold_count / total_count)
+            else:
+                persistence_scores.append(0.0)
+        
+        return np.array(persistence_scores)
+    
+    def _preprocess_sequences(self, seq1: np.ndarray, seq2: np.ndarray, 
+                             multivariate: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+        """Centralized preprocessing for DTW sequences.
+        
+        Args:
+            seq1: First sequence
+            seq2: Second sequence  
+            multivariate: Whether sequences are multivariate
+            
+        Returns:
+            Preprocessed sequence pair
+        """
+        # Step 1: Compute combined adaptive threshold
+        combined = np.concatenate([seq1.flatten(), seq2.flatten()])
+        positive_vals = combined[combined > 0]
+        
+        if len(positive_vals) > 0:
+            # Use 1% percentile of positive values × 1e-3
+            percentile_threshold = np.percentile(positive_vals, 1) * 1e-3
+            adaptive_threshold = max(self.min_eigenvalue_threshold, percentile_threshold)
+        else:
+            adaptive_threshold = self.min_eigenvalue_threshold
+            
+        logger.debug(f"Preprocessing: adaptive_threshold={adaptive_threshold:.2e}")
+        
+        # Step 2: Apply log10 transformation if enabled
+        if self.use_log_scale:
+            seq1_processed = np.log10(np.maximum(seq1, adaptive_threshold))
+            seq2_processed = np.log10(np.maximum(seq2, adaptive_threshold))
+            
+            # Handle non-finite values
+            seq1_processed = np.nan_to_num(seq1_processed, nan=-35.0, posinf=10.0, neginf=-35.0)
+            seq2_processed = np.nan_to_num(seq2_processed, nan=-35.0, posinf=10.0, neginf=-35.0)
+        else:
+            seq1_processed = seq1.copy()
+            seq2_processed = seq2.copy()
+            
+        # Step 3: Optional Z-score normalization on concatenated sequences
+        if self.use_zscore:
+            if multivariate and seq1_processed.ndim > 1:
+                # Per-feature normalization for multivariate
+                for i in range(seq1_processed.shape[1]):
+                        
+                    feature_combined = np.concatenate([seq1_processed[:, i], seq2_processed[:, i]])
+                    mean = np.mean(feature_combined)
+                    std = np.std(feature_combined)
+                    
+                    if std > 1e-12:
+                        seq1_processed[:, i] = (seq1_processed[:, i] - mean) / (std + 1e-8)
+                        seq2_processed[:, i] = (seq2_processed[:, i] - mean) / (std + 1e-8)
+                        
+                        # Less aggressive clipping to preserve more differences
+                        seq1_processed[:, i] = np.clip(seq1_processed[:, i], -5, 5)
+                        seq2_processed[:, i] = np.clip(seq2_processed[:, i], -5, 5)
+            else:
+                # Univariate normalization
+                seq1_flat = seq1_processed.flatten()
+                seq2_flat = seq2_processed.flatten()
+                combined_processed = np.concatenate([seq1_flat, seq2_flat])
+                mean = np.mean(combined_processed)
+                std = np.std(combined_processed)
+                
+                if std > 1e-12:
+                    seq1_processed = (seq1_processed - mean) / (std + 1e-8)
+                    seq2_processed = (seq2_processed - mean) / (std + 1e-8)
+                    
+                    # Less aggressive clipping to preserve more differences
+                    seq1_processed = np.clip(seq1_processed, -5, 5)
+                    seq2_processed = np.clip(seq2_processed, -5, 5)
+                
+        logger.debug(f"Preprocessing complete: seq1 range=[{np.min(seq1_processed):.2f}, {np.max(seq1_processed):.2f}], "
+                    f"seq2 range=[{np.min(seq2_processed):.2f}, {np.max(seq2_processed):.2f}]")
+        
+        return seq1_processed, seq2_processed
+    
+    def _apply_log_scale_transform(self, seq: np.ndarray) -> np.ndarray:
+        """Apply log-scale transformation to eigenvalue sequence.
+        
+        Args:
+            seq: Eigenvalue sequence
+            
+        Returns:
+            Log-transformed sequence
+        """
+        # Apply log10 with threshold to avoid log(0)
+        # Use a shifted log to handle near-zero values better
+        seq_positive = np.maximum(seq, self.min_eigenvalue_threshold)
+        
+        # Add small shift to compress the range of very small values
+        shift = self.min_eigenvalue_threshold * 100
+        seq_shifted = seq_positive + shift
+        
+        # Apply log transformation
+        seq_log = np.log10(seq_shifted)
+        
+        # Normalize to preserve relative differences
+        seq_log = seq_log - np.log10(shift)
+        
+        return seq_log
+    
     def compare_eigenvalue_evolution(self,
                                    evolution1: List[torch.Tensor],
                                    evolution2: List[torch.Tensor],
@@ -402,9 +568,17 @@ class FiltrationDTW:
         # Validate inputs
         self._validate_evolution_sequences(evolution1, evolution2)
         
+        # Compute persistence weights if enabled
+        persistence_weights1 = None
+        persistence_weights2 = None
+        if self.use_persistence_weighting:
+            persistence_weights1 = self._compute_persistence_weights(evolution1)
+            persistence_weights2 = self._compute_persistence_weights(evolution2)
+            logger.debug(f"Computed persistence weights: seq1={persistence_weights1[:5]}, seq2={persistence_weights2[:5]}")
+        
         # Extract eigenvalue sequences
         if multivariate and use_interpolation and match_all_eigenvalues:
-            # Use new interpolation-based extraction
+            # Use standard interpolation-based extraction
             seq1, seq2 = self._extract_multivariate_sequences_interpolated(
                 evolution1, evolution2,
                 filtration_params1, filtration_params2,
@@ -422,6 +596,31 @@ class FiltrationDTW:
             )
             interpolation_used = False
         
+        # Apply centralized preprocessing (includes log transform and normalization)
+        seq1, seq2 = self._preprocess_sequences(seq1, seq2, multivariate=multivariate)
+        
+        # Apply persistence weighting if enabled (strengthened contrast)
+        if self.use_persistence_weighting and persistence_weights1 is not None:
+            if multivariate and seq1.ndim > 1:
+                # Weight each eigenvalue by its persistence with stronger contrast
+                n_features = min(seq1.shape[1], len(persistence_weights1))
+                for i in range(n_features):
+                    if i < len(persistence_weights1):
+                        # Enhanced weighting: w_i = 0.1 + 0.9 * p_i
+                        weight1 = 0.1 + 0.9 * persistence_weights1[i]
+                        seq1[:, i] *= weight1
+                    if i < len(persistence_weights2):
+                        weight2 = 0.1 + 0.9 * persistence_weights2[i]
+                        seq2[:, i] *= weight2
+            else:
+                # For univariate, use the first persistence weight
+                if len(persistence_weights1) > 0:
+                    weight1 = 0.1 + 0.9 * persistence_weights1[0]
+                    seq1 *= weight1
+                if len(persistence_weights2) > 0:
+                    weight2 = 0.1 + 0.9 * persistence_weights2[0]
+                    seq2 *= weight2
+        
         # Validate sequence diversity before DTW computation
         diversity_issues = self._validate_sequence_diversity(seq1, seq2, multivariate)
         
@@ -431,9 +630,9 @@ class FiltrationDTW:
         else:
             distance, alignment = self._compute_univariate_dtw(seq1, seq2)
         
-        # Enhanced normalization with sequence validation
-        normalized_distance = self._compute_enhanced_normalization(
-            seq1, seq2, distance
+        # Use new explicit normalization scheme
+        normalized_distance = self._compute_normalized_distance(
+            seq1, seq2, distance, alignment
         )
         
         # FIXED: Remove aggressive clamping that destroys sensitivity
@@ -471,7 +670,8 @@ class FiltrationDTW:
             'method': self.method,
             'multivariate': multivariate,
             'interpolation_used': interpolation_used,
-            'interpolation_info': interpolation_info
+            'interpolation_info': interpolation_info,
+            'presence_augmented': False
         }
     
     def compare_multiple_evolutions(self,
@@ -673,9 +873,14 @@ class FiltrationDTW:
         for step_idx, eigenvals in enumerate(evolution):
             n_eigen = len(eigenvals)
             
-            # Sort eigenvalues in ascending order for consistent tracking
+            # Sort eigenvalues based on configured ordering
             if n_eigen > 0:
-                sorted_eigenvals = torch.sort(eigenvals)[0]
+                if self.eigen_ordering == 'descending':
+                    # Sort in descending order (largest first)
+                    sorted_eigenvals = torch.sort(eigenvals, descending=True)[0]
+                else:
+                    # Sort in ascending order (smallest first)
+                    sorted_eigenvals = torch.sort(eigenvals, descending=False)[0]
                 eigenvals_array = sorted_eigenvals.detach().cpu().numpy()
             else:
                 eigenvals_array = np.array([])
@@ -763,12 +968,13 @@ class FiltrationDTW:
             # Single eigenvalue - constant interpolation
             return np.full_like(target_positions, values[0])
         
-        # Create interpolator with constant extrapolation
+        # Create interpolator with threshold fill value to avoid extrapolation
+        # This prevents inventing persistence outside the support
         interpolator = interp1d(
             positions, values,
             kind='linear',
             bounds_error=False,
-            fill_value=(values[0], values[-1])  # Constant extrapolation
+            fill_value=self.min_eigenvalue_threshold  # Use threshold instead of extrapolation
         )
         
         # Interpolate at target positions
@@ -797,66 +1003,109 @@ class FiltrationDTW:
         Returns:
             Array of normalized sampling points in [0, 1]
         """
-        if interpolation_points is not None:
-            # Use fixed number of points
-            return np.linspace(0, 1, interpolation_points)
-        
-        # Normalize both parameter sets
-        params1_array = np.array(filtration_params1)
-        params2_array = np.array(filtration_params2)
-        
-        # Normalize to [0, 1]
-        def normalize_params(params):
-            p_min, p_max = params.min(), params.max()
-            if p_max - p_min < 1e-10:
-                return np.linspace(0, 1, len(params))
-            return (params - p_min) / (p_max - p_min)
-        
-        norm_params1 = normalize_params(params1_array)
-        norm_params2 = normalize_params(params2_array)
-        
-        # Combine all normalized points and sort
-        all_points = np.concatenate([norm_params1, norm_params2])
-        unique_points = np.unique(all_points)
-        
-        # Optionally add intermediate points for better resolution
-        if len(unique_points) < 1.5 * max(len(filtration_params1), len(filtration_params2)):
-            # Add midpoints between consecutive unique points
-            midpoints = []
-            for i in range(len(unique_points) - 1):
-                midpoints.append((unique_points[i] + unique_points[i+1]) / 2)
+        # Default to fixed 100-150 points for reproducibility
+        if interpolation_points is None:
+            interpolation_points = 100  # Fixed default for consistency
             
-            if midpoints:
-                all_points_with_midpoints = np.concatenate([unique_points, midpoints])
-                unique_points = np.unique(all_points_with_midpoints)
-        
-        return unique_points
+        # Always use fixed number of points for reproducibility
+        return np.linspace(0, 1, interpolation_points)
     
     def _match_eigenvalue_sequences(self,
                                   organized1: Dict[str, Any],
-                                  organized2: Dict[str, Any]) -> List[Tuple[int, int]]:
-        """Match eigenvalue sequences between two models.
+                                  organized2: Dict[str, Any],
+                                  filtration_params1: List[float],
+                                  filtration_params2: List[float],
+                                  sampling_points: np.ndarray) -> List[Tuple[int, int]]:
+        """Match eigenvalue sequences between two models using correlation or position.
         
         Args:
             organized1: Organized eigenvalue data from first model
             organized2: Organized eigenvalue data from second model
+            filtration_params1: Filtration parameters for first model
+            filtration_params2: Filtration parameters for second model
+            sampling_points: Common sampling points for interpolation
             
         Returns:
             List of (idx1, idx2) tuples indicating matched eigenvalue indices
         """
         n_eigen1 = organized1['max_eigenvalues']
         n_eigen2 = organized2['max_eigenvalues']
-        
-        # Direct matching for common eigenvalues (by position in sorted spectrum)
         n_common = min(n_eigen1, n_eigen2)
-        matches = [(i, i) for i in range(n_common)]
         
-        # Log matching information
-        logger.debug(f"Eigenvalue matching: model1 has {n_eigen1} eigenvalues, "
-                    f"model2 has {n_eigen2} eigenvalues, {n_common} direct matches")
-        
-        # For now, we use position-based matching only
-        # More sophisticated matching (correlation-based) can be added later if needed
+        if self.matching_strategy == 'correlation' and n_common >= 3:
+            # Correlation-based matching for top-k eigenvalues
+            try:
+                # Prepare interpolated sequences for correlation
+                interp_seqs1 = []
+                interp_seqs2 = []
+                
+                for idx in range(n_common):
+                    # Get sequences and masks
+                    seq1 = organized1['sequences'][idx]
+                    mask1 = organized1['exists_mask'][idx]
+                    seq2 = organized2['sequences'][idx]
+                    mask2 = organized2['exists_mask'][idx]
+                    
+                    # Create normalized position mappings
+                    pos1, vals1 = self._create_normalized_position_mapping(filtration_params1, seq1, mask1)
+                    pos2, vals2 = self._create_normalized_position_mapping(filtration_params2, seq2, mask2)
+                    
+                    # Interpolate at common points
+                    if len(pos1) > 0:
+                        interp1 = self._interpolate_eigenvalue_sequence(pos1, vals1, sampling_points)
+                    else:
+                        interp1 = np.full_like(sampling_points, self.min_eigenvalue_threshold)
+                        
+                    if len(pos2) > 0:
+                        interp2 = self._interpolate_eigenvalue_sequence(pos2, vals2, sampling_points)
+                    else:
+                        interp2 = np.full_like(sampling_points, self.min_eigenvalue_threshold)
+                    
+                    # Apply preprocessing for correlation computation
+                    interp1_proc, interp2_proc = self._preprocess_sequences(interp1, interp2, multivariate=False)
+                    
+                    interp_seqs1.append(interp1_proc)
+                    interp_seqs2.append(interp2_proc)
+                
+                # Compute correlation matrix
+                correlation_matrix = np.zeros((n_common, n_common))
+                for i in range(n_common):
+                    for j in range(n_common):
+                        # Compute Pearson correlation
+                        if np.std(interp_seqs1[i]) > 1e-12 and np.std(interp_seqs2[j]) > 1e-12:
+                            corr = np.corrcoef(interp_seqs1[i], interp_seqs2[j])[0, 1]
+                            if not np.isnan(corr):
+                                correlation_matrix[i, j] = abs(corr)  # Use absolute correlation
+                            else:
+                                correlation_matrix[i, j] = 0.0
+                        else:
+                            correlation_matrix[i, j] = 0.0
+                
+                # Use Hungarian algorithm to find optimal matching
+                try:
+                    from scipy.optimize import linear_sum_assignment
+                    # Convert to cost matrix (maximize correlation = minimize negative correlation)
+                    cost_matrix = -correlation_matrix
+                    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+                    
+                    matches = list(zip(row_ind, col_ind))
+                    
+                    # Log matching quality
+                    total_corr = sum(correlation_matrix[i, j] for i, j in matches)
+                    avg_corr = total_corr / len(matches) if matches else 0
+                    logger.debug(f"Correlation-based matching: {len(matches)} pairs, avg correlation={avg_corr:.3f}")
+                    
+                except ImportError:
+                    logger.warning("scipy.optimize not available, falling back to position-based matching")
+                    matches = [(i, i) for i in range(n_common)]
+                    
+            except Exception as e:
+                logger.warning(f"Correlation-based matching failed: {e}, using position-based")
+                matches = [(i, i) for i in range(n_common)]
+        else:
+            # Position-based matching (default or fallback)
+            matches = [(i, i) for i in range(n_common)]
+            logger.debug(f"Position-based matching: {len(matches)} direct matches")
         
         return matches
     
@@ -900,7 +1149,9 @@ class FiltrationDTW:
             )
             
             # Match eigenvalue sequences
-            matches = self._match_eigenvalue_sequences(organized1, organized2)
+            matches = self._match_eigenvalue_sequences(organized1, organized2, 
+                                                       filtration_params1, filtration_params2,
+                                                       sampling_points)
             
             # Interpolate matched sequences
             seq1_interpolated = []
@@ -1068,33 +1319,11 @@ class FiltrationDTW:
             if seq1.shape[1] != seq2.shape[1]:
                 raise ValidationError(f"Sequences must have same number of features: {seq1.shape[1]} vs {seq2.shape[1]}")
             
-            # Check if log transformation is beneficial
-            # Only apply if eigenvalues span multiple orders of magnitude
-            combined_seq = np.concatenate([seq1.flatten(), seq2.flatten()])
-            valid_values = combined_seq[combined_seq > self.min_eigenvalue_threshold]
+            # Sequences are already preprocessed, so use them directly
+            seq1_processed = seq1.copy()
+            seq2_processed = seq2.copy()
             
-            use_log_transform = False
-            if len(valid_values) > 0:
-                value_range = np.max(valid_values) / np.min(valid_values)
-                use_log_transform = value_range > 100.0  # Use log if range spans >2 orders of magnitude
-            
-            if use_log_transform:
-                # Apply log transformation for better numerical properties
-                seq1_processed = np.log(np.maximum(seq1, self.min_eigenvalue_threshold))
-                seq2_processed = np.log(np.maximum(seq2, self.min_eigenvalue_threshold))
-                
-                # Ensure finite values
-                if not (np.isfinite(seq1_processed).all() and np.isfinite(seq2_processed).all()):
-                    logger.warning("Non-finite values detected in log-transformed sequences")
-                    seq1_processed = np.nan_to_num(seq1_processed, nan=0.0, posinf=10.0, neginf=-10.0)
-                    seq2_processed = np.nan_to_num(seq2_processed, nan=0.0, posinf=10.0, neginf=-10.0)
-                    
-                logger.debug(f"Applied log transformation (range ratio: {value_range:.2f})")
-            else:
-                # Use original sequences
-                seq1_processed = seq1.copy()
-                seq2_processed = seq2.copy()
-                logger.debug(f"Skipped log transformation (range ratio: {value_range:.2f})")
+            logger.debug("Using preprocessed sequences for multivariate DTW")
             
             # Compute DTW with constraints - use combined path computation
             if self.constraint_band > 0:
