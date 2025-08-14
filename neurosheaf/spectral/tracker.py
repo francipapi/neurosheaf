@@ -2,7 +2,9 @@
 import torch
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
-from scipy.linalg import subspace_angles
+from scipy.linalg import subspace_angles, cholesky, LinAlgError
+from scipy.sparse import csc_matrix, issparse
+from scipy.sparse.linalg import spsolve_triangular
 import networkx as nx
 from ..utils.logging import setup_logger
 from ..utils.exceptions import ComputationError
@@ -47,7 +49,8 @@ class SubspaceTracker:
                          eigenvectors_sequence: List[torch.Tensor],
                          filtration_params: List[float],
                          construction_method: str = 'standard',
-                         sheaf_metadata: Optional[Dict] = None) -> Dict:
+                         sheaf_metadata: Optional[Dict] = None,
+                         mass_matrices_sequence: Optional[List[torch.Tensor]] = None) -> Dict:
         """Track eigenspaces through filtration parameter changes.
         
         Route to appropriate tracking method based on construction method.
@@ -60,6 +63,7 @@ class SubspaceTracker:
             filtration_params: List of filtration parameter values
             construction_method: Sheaf construction method
             sheaf_metadata: Additional metadata about sheaf construction (for GW methods)
+            mass_matrices_sequence: Optional list of mass matrices M for generalized problems Av = λMv
             
         Returns:
             Dictionary with tracking information including paths, birth/death events
@@ -69,12 +73,16 @@ class SubspaceTracker:
         
         if len(eigenvalues_sequence) != len(filtration_params):
             raise ValueError("Sequences and filtration parameters must have same length")
+            
+        if mass_matrices_sequence is not None:
+            if len(mass_matrices_sequence) != len(eigenvalues_sequence):
+                raise ValueError("Mass matrices sequence must have same length as eigenvalue sequence")
         
         # Route to appropriate method handler
         handler = self._method_handlers.get(construction_method, self._track_standard_subspaces)
         logger.info(f"Routing to {construction_method} tracking handler")
         
-        return handler(eigenvalues_sequence, eigenvectors_sequence, filtration_params)
+        return handler(eigenvalues_sequence, eigenvectors_sequence, filtration_params, mass_matrices_sequence)
     
     def _group_eigenvalues(self,
                           eigenvalues: torch.Tensor,
@@ -127,12 +135,16 @@ class SubspaceTracker:
     
     def _match_eigenspaces(self, 
                           prev_groups: List[Dict],
-                          curr_groups: List[Dict]) -> List[Tuple[int, int, float]]:
+                          curr_groups: List[Dict],
+                          prev_mass_matrix: Optional[torch.Tensor] = None,
+                          curr_mass_matrix: Optional[torch.Tensor] = None) -> List[Tuple[int, int, float]]:
         """Match eigenspaces between consecutive steps using principal angles.
         
         Args:
             prev_groups: Eigenvalue groups from previous step
             curr_groups: Eigenvalue groups from current step
+            prev_mass_matrix: Optional mass matrix for previous step (for M-orthogonal bases)
+            curr_mass_matrix: Optional mass matrix for current step (for M-orthogonal bases)
             
         Returns:
             List of matches as (prev_idx, curr_idx, similarity) tuples
@@ -144,10 +156,21 @@ class SubspaceTracker:
         
         for i, prev_group in enumerate(prev_groups):
             for j, curr_group in enumerate(curr_groups):
-                similarity = self._compute_subspace_similarity(
-                    prev_group['subspace'],
-                    curr_group['subspace']
-                )
+                # Use M-aware similarity if mass matrices available and compatible
+                if (prev_mass_matrix is not None and curr_mass_matrix is not None and 
+                    torch.allclose(prev_mass_matrix, curr_mass_matrix, atol=1e-12)):
+                    # Mass matrices are the same, use M-orthogonal similarity
+                    similarity = self._compute_m_orthogonal_subspace_similarity(
+                        prev_group['subspace'],
+                        curr_group['subspace'],
+                        prev_mass_matrix
+                    )
+                else:
+                    # Fall back to Euclidean similarity
+                    similarity = self._compute_subspace_similarity(
+                        prev_group['subspace'],
+                        curr_group['subspace']
+                    )
                 similarity_matrix[i, j] = similarity
         
         # Find optimal matches using Hungarian algorithm
@@ -283,6 +306,75 @@ class SubspaceTracker:
             except Exception as e2:
                 logger.warning(f"Fallback similarity computation also failed: {e2}")
                 return 0.0
+    
+    def _compute_m_orthogonal_subspace_similarity(self,
+                                                subspace1: torch.Tensor,
+                                                subspace2: torch.Tensor,
+                                                mass_matrix: torch.Tensor) -> float:
+        """Compute similarity between M-orthogonal subspaces using correct inner product.
+        
+        For eigenvectors from generalized eigenvalue problems Av = λMv, the eigenvectors
+        are M-orthonormal (V^T M V = I), not Euclidean-orthonormal. This method transforms
+        the bases to Euclidean-orthonormal form before computing subspace angles.
+        
+        Args:
+            subspace1: First subspace (columns are M-orthogonal basis vectors)
+            subspace2: Second subspace (columns are M-orthogonal basis vectors)  
+            mass_matrix: Mass matrix M defining the inner product
+            
+        Returns:
+            Subspace similarity as product of cosines of principal angles
+        """
+        # Handle dimensional mismatches
+        if subspace1.shape[0] != subspace2.shape[0]:
+            logger.warning(f"Subspace dimension mismatch: {subspace1.shape[0]} vs {subspace2.shape[0]}")
+            return 0.0
+            
+        try:
+            # Convert to numpy for scipy operations
+            Q1 = subspace1.detach().cpu().numpy()
+            Q2 = subspace2.detach().cpu().numpy()
+            M = mass_matrix.detach().cpu().numpy()
+            
+            # Handle different matrix types (sparse/dense)
+            if issparse(M):
+                M_dense = M.toarray()
+            else:
+                M_dense = M
+            
+            # Ensure M is symmetric and positive definite
+            M_dense = 0.5 * (M_dense + M_dense.T)
+            
+            # Compute Cholesky decomposition: M = C^T C
+            try:
+                C = cholesky(M_dense, lower=False)  # C is upper triangular, M = C^T C
+            except LinAlgError:
+                # M is not positive definite, try regularization
+                logger.warning("Mass matrix not positive definite, applying regularization")
+                reg_factor = 1e-12 * np.trace(M_dense) / M_dense.shape[0]
+                M_reg = M_dense + reg_factor * np.eye(M_dense.shape[0])
+                try:
+                    C = cholesky(M_reg, lower=False)
+                except LinAlgError:
+                    # Fall back to Euclidean similarity
+                    logger.warning("Cholesky decomposition failed, falling back to Euclidean similarity")
+                    return self._compute_subspace_similarity(subspace1, subspace2)
+            
+            # Transform bases to Euclidean-orthonormal: Q_euclidean = C @ Q_m_orthogonal
+            Q1_euclidean = C @ Q1
+            Q2_euclidean = C @ Q2
+            
+            # Compute principal angles using transformed Euclidean-orthonormal bases
+            angles = subspace_angles(Q1_euclidean, Q2_euclidean)
+            
+            # Similarity is product of cosines
+            similarity = np.prod(np.cos(angles))
+            return float(max(0.0, min(similarity, 1.0)))  # Ensure bounds [0, 1]
+            
+        except Exception as e:
+            logger.warning(f"M-orthogonal similarity computation failed: {e}")
+            # Fall back to Euclidean similarity
+            return self._compute_subspace_similarity(subspace1, subspace2)
     
     def _update_tracking_info(self,
                             tracking_info: Dict,
@@ -452,7 +544,8 @@ class SubspaceTracker:
     def _track_gw_subspaces(self,
                            eigenvalues_sequence: List[torch.Tensor],
                            eigenvectors_sequence: List[torch.Tensor],
-                           filtration_params: List[float]) -> Dict:
+                           filtration_params: List[float],
+                           mass_matrices_sequence: Optional[List[torch.Tensor]] = None) -> Dict:
         """Track subspaces for GW-based filtration with zero-crossing detection.
         
         GW-specific birth-death semantics:
@@ -466,12 +559,13 @@ class SubspaceTracker:
         logger.info("Tracking eigenvalue magnitude transitions for GW filtration (zero-crossing detection)")
         
         # Use GW-specific tracker with zero-crossing detection
-        return self._track_gw_magnitude_transitions(eigenvalues_sequence, eigenvectors_sequence, filtration_params)
+        return self._track_gw_magnitude_transitions(eigenvalues_sequence, eigenvectors_sequence, filtration_params, mass_matrices_sequence)
     
     def _track_standard_subspaces(self,
                                  eigenvalues_sequence: List[torch.Tensor],
                                  eigenvectors_sequence: List[torch.Tensor],
-                                 filtration_params: List[float]) -> Dict:
+                                 filtration_params: List[float],
+                                 mass_matrices_sequence: Optional[List[torch.Tensor]] = None) -> Dict:
         """Track subspaces for standard (Procrustes) filtration.
         
         Standard considerations:
@@ -524,8 +618,12 @@ class SubspaceTracker:
             curr_eigenvecs = eigenvectors_sequence[i]
             curr_groups = self._group_eigenvalues(curr_eigenvals, curr_eigenvecs)
             
+            # Get mass matrices for M-aware similarity if available
+            prev_mass_matrix = mass_matrices_sequence[i-1] if mass_matrices_sequence is not None else None
+            curr_mass_matrix = mass_matrices_sequence[i] if mass_matrices_sequence is not None else None
+            
             # Match groups between steps using subspace similarity
-            matching = self._match_eigenspaces(prev_groups, curr_groups)
+            matching = self._match_eigenspaces(prev_groups, curr_groups, prev_mass_matrix, curr_mass_matrix)
             
             # Update active paths based on matching
             self._update_paths_from_matching(
@@ -578,7 +676,8 @@ class SubspaceTracker:
     def _track_gw_magnitude_transitions(self,
                                        eigenvalues_sequence: List[torch.Tensor],
                                        eigenvectors_sequence: List[torch.Tensor],
-                                       filtration_params: List[float]) -> Dict:
+                                       filtration_params: List[float],
+                                       mass_matrices_sequence: Optional[List[torch.Tensor]] = None) -> Dict:
         """Track eigenvalue magnitude transitions for GW filtration.
         
         GW filtration semantics: increasing parameters = increasing complexity

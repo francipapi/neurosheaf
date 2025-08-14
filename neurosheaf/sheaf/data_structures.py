@@ -24,7 +24,7 @@ class GWCouplingInfo:
     for GW-based restriction map construction.
     
     Attributes:
-        coupling: Transport plan π_{target→source} with marginal constraints
+        coupling: Transport plan π with shape (n_source, n_target) following POT convention
         cost: Scalar GW distortion cost for this edge
         convergence_info: Solver convergence diagnostics
         source_node: Source node identifier in the poset
@@ -92,8 +92,9 @@ class Sheaf:
         Returns:
             Dictionary with Laplacian structure information
         """
-        nodes = list(self.poset.nodes())
-        edges = list(self.poset.edges())
+        from ..utils.indexing import canonical_node_order, canonical_edge_order
+        nodes = canonical_node_order(self.poset.nodes())
+        edges = canonical_edge_order(self.poset.edges())
         
         # Compute total dimension
         total_dim = sum(stalk.shape[-1] if stalk.ndim > 1 else stalk.shape[0] 
@@ -206,7 +207,7 @@ class Sheaf:
                 rank = torch.sum(S > 1e-10).item()
                 
                 # Condition number
-                if S[0] > 1e-10 and len(S) > 0:
+                if S[0] > 1e-10 and S.numel() > 0:
                     condition_number = (S[0] / S[-1]).item() if S[-1] > 1e-10 else float('inf')
                 
             except:
@@ -221,8 +222,8 @@ class Sheaf:
             'frobenius_norm': frobenius_norm,
             'rank': rank,
             'condition_number': condition_number,
-            'max_singular': singular_values[0].item() if singular_values is not None and len(singular_values) > 0 else None,
-            'min_singular': singular_values[-1].item() if singular_values is not None and len(singular_values) > 0 else None,
+            'max_singular': singular_values[0].item() if singular_values is not None and singular_values.numel() > 0 else None,
+            'min_singular': singular_values[-1].item() if singular_values is not None and singular_values.numel() > 0 else None,
             'sparsity': sparsity,
             'num_nonzero': num_nonzero
         }

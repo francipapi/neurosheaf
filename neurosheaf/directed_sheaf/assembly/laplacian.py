@@ -419,7 +419,8 @@ class DirectedSheafLaplacianBuilder:
             Dictionary mapping (node1, node2) to Hermitian blocks with eigenvalue preservation
         """
         hermitian_blocks = {}
-        vertices = list(poset.nodes())
+        from ...utils.indexing import canonical_node_order
+        vertices = canonical_node_order(poset.nodes())
         
         # Create node to index mapping
         node_to_idx = {node: i for i, node in enumerate(vertices)}
@@ -503,7 +504,8 @@ class DirectedSheafLaplacianBuilder:
             Dictionary mapping (node1, node2) to Hermitian blocks
         """
         hermitian_blocks = {}
-        vertices = list(poset.nodes())
+        from ...utils.indexing import canonical_node_order
+        vertices = canonical_node_order(poset.nodes())
         
         # Create node to index mapping
         node_to_idx = {node: i for i, node in enumerate(vertices)}

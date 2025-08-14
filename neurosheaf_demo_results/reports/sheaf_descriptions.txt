@@ -5,7 +5,7 @@ DETAILED SHEAF STRUCTURE DESCRIPTIONS
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -14,7 +14,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -23,7 +23,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 15
   Edges: 14
-  Total dimension: 1500
+  Total dimension: 750
   Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
@@ -32,7 +32,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -41,7 +41,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 15
   Edges: 14
-  Total dimension: 1500
+  Total dimension: 750
   Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein

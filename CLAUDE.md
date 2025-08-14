@@ -60,6 +60,69 @@ R_whitened = compute_restriction_whitened(K_source_white, K_target_white)
 - Implementation: Uses sparse matrices throughout for efficiency
 - **Result**: Correct spectral properties for neural network analysis with varying layer sizes
 
+### COBOUNDARY/METRIC UNIFICATION (Phase 3 - CRITICAL FIX)
+**IMPLEMENTATION COMPLETE**: Fixed coboundary/metric model mismatch in H⁰ persistence path.
+
+```python
+# CORRECT: General coboundary with proper edge fiber dimensions
+from neurosheaf.sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+
+builder = GWLaplacianBuilder()
+result = builder.build_coboundary_with_metrics(
+    sheaf, 
+    active_edges=edges,
+    legacy_h0=False  # Default: use correct formulation
+)
+# delta.shape[0] = sum of edge fiber dimensions
+# G1.shape = (total_edge_dim, total_edge_dim) block-diagonal
+
+# LEGACY (incorrect for vector stalks, retained for ablation only)
+result_legacy = builder.build_coboundary_with_metrics(
+    sheaf,
+    active_edges=edges, 
+    legacy_h0=True  # WARNING: mathematically incorrect!
+)
+# delta.shape[0] = number of edges (collapses fiber dimensions)
+# G1.shape = (n_edges, n_edges) scalar diagonal
+```
+
+**Technical Details**:
+- Correct approach: Uses `build_coboundary_general_sparse` internally
+- G₁ construction: Block-diagonal via `build_G1_block_diagonal_corrected`
+- Shape validation: Enforces G₁.shape[0] == δ.shape[0], G₀.shape[0] == δ.shape[1]
+- **Impact**: H⁰ persistence now correctly reflects sheaf structure for vector-valued stalks
+
+### DTYPE CONSISTENCY POLICY (Phase 3 - CRITICAL FEATURE)
+**IMPLEMENTATION COMPLETE**: Full dtype consistency implemented across GW pipeline supporting both float32 and float64.
+
+```python
+# CORRECT: Configurable dtype policy
+from neurosheaf.sheaf.core import GWConfig
+
+# For memory efficiency (large networks)
+gw_config = GWConfig(computation_dtype='float32')
+
+# For numerical precision (small networks, scientific results)
+gw_config = GWConfig(computation_dtype='float64')  # Default
+
+# Automatic dtype inference
+gw_laplacian_builder = GWLaplacianBuilder()  # Infers from sheaf metadata
+
+# WRONG: Mixed dtypes causing "expected scalar type Double but found Float"
+# All components now use consistent dtype throughout
+```
+
+**Technical Implementation**:
+- Early activation conversion to target dtype in GWRestrictionManager
+- Consistent tensor creation with explicit dtype specification
+- POT library integration with proper numpy/torch dtype handling
+- Comprehensive test coverage (18 tests) for both float32/float64
+
+**Performance Impact**:
+- float32: ~50% memory reduction for large neural networks
+- float64: Better numerical stability for spectral analysis (recommended for results)
+- Automatic validation prevents dtype mismatches
+
 ### Performance Targets
 - **Memory**: <3GB for ResNet50 analysis (7× improvement from 20GB baseline)
 - **Speed**: <5 minutes for complete analysis pipeline

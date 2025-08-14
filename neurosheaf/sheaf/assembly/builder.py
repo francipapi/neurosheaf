@@ -291,7 +291,12 @@ class SheafBuilder:
                 }
             )
             
-            # 8. Validate the sheaf's mathematical properties.
+            # 8.1. Add canonical indexing metadata for deterministic matrix construction
+            from ...utils.indexing import create_sheaf_indexing_metadata
+            indexing_metadata = create_sheaf_indexing_metadata(poset)
+            sheaf.metadata.update(indexing_metadata)
+            
+            # 8.2. Validate the sheaf's mathematical properties.
             if validate:
                 validation_results = validate_sheaf_properties(sheaf.restrictions, sheaf.poset)
                 sheaf.metadata['validation'] = validation_results
@@ -370,10 +375,11 @@ class SheafBuilder:
                 filtered_activations, poset, parallel=True
             )
             
-            # 5. Create Gram matrix-based stalks (proper sheaf construction)
-            # Stalks are cosine similarity matrices computed from activations
+            # 5. Create stalks based on alignment mode
             stalks = {}
             stalk_dimensions = {}
+            
+            import torch.nn.functional as F
             
             for node_name, activation_tensor in filtered_activations.items():
                 # Flatten activation if needed to get feature vectors
@@ -382,26 +388,51 @@ class SheafBuilder:
                 else:
                     activation_tensor_flat = activation_tensor
                 
-                # Handle zero vectors to avoid numerical issues
-                norms = torch.norm(activation_tensor_flat, dim=1, keepdim=True)
-                zero_mask = norms < 1e-10
-                if torch.any(zero_mask):
-                    logger.warning(f"Found {zero_mask.sum()} zero vectors in {node_name}, adding small noise")
-                    activation_tensor_flat = activation_tensor_flat.clone()
-                    activation_tensor_flat[zero_mask.squeeze()] += 1e-8 * torch.randn_like(activation_tensor_flat[zero_mask.squeeze()])
-                
-                # Compute cosine similarity matrix (Gram matrix of normalized vectors)
-                # This creates the proper stalks for sheaf construction
-                import torch.nn.functional as F
-                X_normalized = F.normalize(activation_tensor_flat, p=2, dim=1)
-                K = X_normalized @ X_normalized.T
-                
-                n_samples = activation_tensor_flat.shape[0]
-                stalks[node_name] = K
-                stalk_dimensions[node_name] = n_samples
-                
-                logger.debug(f"Created Gram matrix stalk for {node_name}: {n_samples}×{n_samples}, "
-                           f"eigenvalue range: [{K.min():.6f}, {K.max():.6f}]")
+                if gw_config.align_units:
+                    # Unit-based alignment: create unit Gram matrices
+                    # Transpose to (n_units, n_samples) format
+                    X_units = activation_tensor_flat.T  # (n_features/units, n_samples)
+                    
+                    # Handle zero unit vectors to avoid numerical issues
+                    norms = torch.norm(X_units, dim=1, keepdim=True)
+                    zero_mask = norms < 1e-10
+                    if torch.any(zero_mask):
+                        logger.warning(f"Found {zero_mask.sum()} zero unit vectors in {node_name}, adding small noise")
+                        X_units = X_units.clone()
+                        X_units[zero_mask.squeeze()] += 1e-8 * torch.randn_like(X_units[zero_mask.squeeze()])
+                    
+                    # Normalize each unit's activation vector across the batch
+                    X_units_normalized = F.normalize(X_units, p=2, dim=1)
+                    
+                    # Compute unit Gram matrix (cosine similarity between units)
+                    K = X_units_normalized @ X_units_normalized.T  # (n_units, n_units)
+                    
+                    n_units = X_units.shape[0]
+                    stalks[node_name] = K
+                    stalk_dimensions[node_name] = n_units
+                    
+                    logger.debug(f"Created unit Gram matrix stalk for {node_name}: {n_units}×{n_units}, "
+                               f"eigenvalue range: [{K.min():.6f}, {K.max():.6f}]")
+                else:
+                    # Sample-based alignment (deprecated): create sample Gram matrices
+                    # Handle zero vectors to avoid numerical issues
+                    norms = torch.norm(activation_tensor_flat, dim=1, keepdim=True)
+                    zero_mask = norms < 1e-10
+                    if torch.any(zero_mask):
+                        logger.warning(f"Found {zero_mask.sum()} zero vectors in {node_name}, adding small noise")
+                        activation_tensor_flat = activation_tensor_flat.clone()
+                        activation_tensor_flat[zero_mask.squeeze()] += 1e-8 * torch.randn_like(activation_tensor_flat[zero_mask.squeeze()])
+                    
+                    # Compute cosine similarity matrix (Gram matrix of normalized vectors)
+                    X_normalized = F.normalize(activation_tensor_flat, p=2, dim=1)
+                    K = X_normalized @ X_normalized.T
+                    
+                    n_samples = activation_tensor_flat.shape[0]
+                    stalks[node_name] = K
+                    stalk_dimensions[node_name] = n_samples
+                    
+                    logger.debug(f"Created sample Gram matrix stalk for {node_name}: {n_samples}×{n_samples}, "
+                               f"eigenvalue range: [{K.min():.6f}, {K.max():.6f}]")
             
             # 6. Create module type mapping for visualization  
             module_types = {}
@@ -421,6 +452,9 @@ class SheafBuilder:
                     logger.debug(f"Could not extract module types: {e}")
             
             # 7. Create comprehensive GW metadata
+            # CRITICAL: construction_method must be 'gromov_wasserstein' for:
+            # - is_gw_sheaf() detection (data_structures.py:471)
+            # - GWLaplacianBuilder acceptance (gw_laplacian.py:157-158) 
             sheaf_metadata = {
                 'construction_method': 'gromov_wasserstein',
                 'nodes': len(poset.nodes()),
@@ -431,6 +465,7 @@ class SheafBuilder:
                 'traced_model': traced_model,
                 'module_types': module_types,
                 'preserve_eigenvalues': False,  # Not applicable for GW
+                'align_units': gw_config.align_units,  # Record alignment mode
                 
                 # GW-specific metadata
                 'gw_config': gw_config.to_dict(),
@@ -446,7 +481,8 @@ class SheafBuilder:
                 # Edge weight metadata for spectral analysis
                 'edge_weight_type': 'metric_distortion',  # vs 'correlation' for Procrustes
                 'filtration_semantics': 'increasing',     # vs 'decreasing' for Procrustes
-                'quasi_sheaf_tolerance': gw_config.quasi_sheaf_tolerance
+                'quasi_sheaf_tolerance': gw_config.quasi_sheaf_tolerance,
+                'alignment_type': 'unit' if gw_config.align_units else 'sample'  # Explicit alignment type
             }
             
             # 8. Create the GW Sheaf object
@@ -457,6 +493,11 @@ class SheafBuilder:
                 eigenvalue_metadata=None,  # Not applicable for GW
                 metadata=sheaf_metadata
             )
+            
+            # 8.1. Add canonical indexing metadata for deterministic matrix construction
+            from ...utils.indexing import create_sheaf_indexing_metadata
+            indexing_metadata = create_sheaf_indexing_metadata(poset)
+            sheaf.metadata.update(indexing_metadata)
             
             # 9. Validation (optional)
             if validate:
@@ -491,6 +532,10 @@ class SheafBuilder:
         """
         Builds a sheaf directly from graph structure and restriction maps.
         
+        WARNING: This method creates sheaves with construction_method='graph_based'.
+        For GW sheaves, use build_from_activations() with restriction_method='gromov_wasserstein'
+        instead. GW-specific functionality requires construction_method='gromov_wasserstein'.
+        
         This method allows manual construction of sheaves for testing and
         research purposes, bypassing the neural network activation extraction.
         
@@ -501,7 +546,7 @@ class SheafBuilder:
             validate: Whether to validate the resulting sheaf's mathematical properties
             
         Returns:
-            A constructed Sheaf object
+            A constructed Sheaf object (with construction_method='graph_based')
             
         Raises:
             BuilderError: If construction fails
@@ -543,6 +588,11 @@ class SheafBuilder:
                     'manual_construction': True
                 }
             )
+            
+            # Add canonical indexing metadata for deterministic matrix construction
+            from ...utils.indexing import create_sheaf_indexing_metadata
+            indexing_metadata = create_sheaf_indexing_metadata(poset)
+            sheaf.metadata.update(indexing_metadata)
             
             # Validate sheaf properties if requested
             if validate:

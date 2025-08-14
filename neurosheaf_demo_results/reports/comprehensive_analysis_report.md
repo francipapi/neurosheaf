@@ -1,6 +1,6 @@
 # Comprehensive Neurosheaf Pipeline Analysis Report
 
-Generated: 2025-08-06 15:12:54
+Generated: 2025-08-09 13:03:28
 
 ## Executive Summary
 
@@ -34,7 +34,7 @@ mlp_trained_100    MLP Trained (100% Acc)          MLP         Trained      7,55
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -43,7 +43,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -52,7 +52,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 15
   Edges: 14
-  Total dimension: 1500
+  Total dimension: 750
   Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
@@ -61,7 +61,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 25
   Edges: 24
-  Total dimension: 2500
+  Total dimension: 1250
   Sparsity: 96.0%
   Validation: ✗
   Method: gromov_wasserstein
@@ -70,7 +70,7 @@ Sheaf Summary:
 Sheaf Summary:
   Nodes: 15
   Edges: 14
-  Total dimension: 1500
+  Total dimension: 750
   Sparsity: 93.3%
   Validation: ✗
   Method: gromov_wasserstein
@@ -134,7 +134,7 @@ Custom Random                                 0.0                       0.0     
 ```
 
 ### GW Sheaf Configuration
-- Epsilon: 0.03535533905932738
+- Epsilon: 0.05
 - Maximum Iterations: 100
 - Tolerance: 1e-08
 - Quasi-Sheaf Tolerance: 0.08

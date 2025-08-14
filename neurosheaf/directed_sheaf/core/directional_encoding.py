@@ -157,7 +157,8 @@ class DirectionalEncodingComputer:
         
         # Determine node ordering
         if node_ordering is None:
-            node_ordering = list(poset.nodes())
+            from ...utils.indexing import canonical_node_order
+            node_ordering = canonical_node_order(poset.nodes())
         else:
             # Validate node ordering
             if set(node_ordering) != set(poset.nodes()):
@@ -411,6 +412,7 @@ class DirectionalEncodingComputer:
             Dictionary mapping node names to matrix indices
         """
         if node_ordering is None:
-            node_ordering = list(poset.nodes())
+            from ...utils.indexing import canonical_node_order
+            node_ordering = canonical_node_order(poset.nodes())
         
         return {node: i for i, node in enumerate(node_ordering)}

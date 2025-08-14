@@ -208,7 +208,7 @@ class NystromCKA:
                     _, S, _ = torch.linalg.svd(X)
                 
                 # Count significant singular values
-                max_sv = S[0] if len(S) > 0 else 1.0
+                max_sv = S[0] if S.numel() > 0 else 1.0
                 threshold = max(self.rank_tolerance, max_sv * self.rank_tolerance)
                 effective_rank = torch.sum(S > threshold).item()
                 
@@ -242,7 +242,7 @@ class NystromCKA:
             eigenvals, _ = torch.sort(eigenvals, descending=True)
             
             # Count significant eigenvalues
-            max_eig = eigenvals[0] if len(eigenvals) > 0 else 1.0
+            max_eig = eigenvals[0] if eigenvals.numel() > 0 else 1.0
             threshold = max(self.rank_tolerance, max_eig * self.rank_tolerance)
             effective_rank = torch.sum(eigenvals > threshold).item()
             
@@ -552,13 +552,13 @@ class NystromCKA:
             landmarks = torch.unique(landmarks)
             
             # If we lost some landmarks due to duplicates, add random ones
-            if len(landmarks) < n_landmarks:
-                remaining = n_landmarks - len(landmarks)
+            if landmarks.numel() < n_landmarks:
+                remaining = n_landmarks - landmarks.numel()
                 all_indices = torch.arange(n_samples, device=X.device)
                 remaining_indices = all_indices[~torch.isin(all_indices, landmarks)]
                 
-                if len(remaining_indices) > 0:
-                    additional = remaining_indices[torch.randperm(len(remaining_indices))[:remaining]]
+                if remaining_indices.numel() > 0:
+                    additional = remaining_indices[torch.randperm(remaining_indices.numel())[:remaining]]
                     landmarks = torch.cat([landmarks, additional])
             
             return landmarks[:n_landmarks]

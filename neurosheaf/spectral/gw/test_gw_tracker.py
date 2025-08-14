@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 from neurosheaf.spectral.gw.gw_subspace_tracker import GWSubspaceTracker
 from neurosheaf.spectral.gw.pes_computation import PESComputer
-from neurosheaf.spectral.gw.sheaf_inclusion_mapper import SheafInclusionMapper
+from neurosheaf.spectral.gw.sheaf_inclusion_mapper import SheafInclusionMapper, InclusionMapping
 from neurosheaf.spectral.tracker_factory import SubspaceTrackerFactory
 from neurosheaf.utils.logging import setup_logger
 
@@ -151,20 +151,20 @@ def test_inclusion_mapper():
     mapper = SheafInclusionMapper(method='identity_extension')
     
     # Test inclusion mapping creation
-    inclusion_map = mapper.create_gw_inclusion_mapping(
+    inclusion_result = mapper.create_gw_inclusion_mapping(
         prev_step=0,
         curr_step=1,
         prev_eigenspace_dim=prev_dim,
         curr_eigenspace_dim=curr_dim
     )
     
-    assert inclusion_map.shape == (curr_dim, prev_dim), f"Wrong inclusion shape: {inclusion_map.shape}"
+    assert inclusion_result.matrix.shape == (curr_dim, prev_dim), f"Wrong inclusion shape: {inclusion_result.matrix.shape}"
     
     # Test validation
-    is_valid = mapper.validate_sheaf_morphism_properties(inclusion_map)
+    is_valid = mapper.validate_sheaf_morphism_properties(inclusion_result.matrix)
     assert is_valid, "Inclusion mapping validation failed"
     
-    logger.info(f"✅ Inclusion Mapper test passed: {inclusion_map.shape} mapping")
+    logger.info(f"✅ Inclusion Mapper test passed: {inclusion_result.matrix.shape} mapping")
 
 
 def test_gw_tracker_factory():

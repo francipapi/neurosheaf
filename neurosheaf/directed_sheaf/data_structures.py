@@ -187,7 +187,8 @@ class DirectedSheaf:
         Returns:
             Adjacency matrix A where A[i,j] = 1 if edge (i,j) exists
         """
-        nodes = list(self.poset.nodes())
+        from ..utils.indexing import canonical_node_order
+        nodes = canonical_node_order(self.poset.nodes())
         n = len(nodes)
         node_to_idx = {node: i for i, node in enumerate(nodes)}
         
@@ -205,8 +206,9 @@ class DirectedSheaf:
         Returns:
             Dictionary with Laplacian structure information
         """
-        nodes = list(self.poset.nodes())
-        edges = list(self.poset.edges())
+        from ..utils.indexing import canonical_node_order, canonical_edge_order
+        nodes = canonical_node_order(self.poset.nodes())
+        edges = canonical_edge_order(self.poset.edges())
         
         # Compute total complex and real dimensions
         complex_dim = self.get_complex_dimension()

@@ -111,8 +111,11 @@ class UnifiedStaticLaplacian:
                  enable_gpu: bool = True,
                  enable_caching: bool = False,
                  validate_properties: bool = False,
-                 use_double_precision: bool = False,
-                 force_dense_eigenvalues: bool = False):
+                 use_double_precision: bool = True,
+                 force_dense_eigenvalues: bool = False,
+                 use_generalized_normalization: bool = True,
+                 use_matrix_free: bool = False,
+                 force_dense_gw_solver: bool = False):
         """Initialize UnifiedStaticLaplacian.
         
         Args:
@@ -122,8 +125,11 @@ class UnifiedStaticLaplacian:
             enable_gpu: Whether to enable GPU operations
             enable_caching: Whether to cache intermediate computations
             validate_properties: Whether to validate mathematical properties
-            use_double_precision: Whether to use double precision for eigenvalue computations
+            use_double_precision: Whether to use double precision (float64) for eigenvalue computations (default: True for numerical stability)
             force_dense_eigenvalues: Whether to force dense eigenvalue computation (overrides eigenvalue_method)
+            use_generalized_normalization: Whether to use generalized eigenvalue problem L x = λ M x
+            use_matrix_free: Whether to use matrix-free LinearOperator for large problems (with generalized normalization)
+            force_dense_gw_solver: Whether to force dense solver for GW generalized eigenvalue problems (for accuracy)
         """
         self.laplacian_builder = laplacian_builder or SheafLaplacianBuilder(
             validate_properties=validate_properties
@@ -135,6 +141,32 @@ class UnifiedStaticLaplacian:
         self.validate_properties = validate_properties
         self.use_double_precision = use_double_precision
         self.force_dense_eigenvalues = force_dense_eigenvalues
+        
+        # Warn about potential numerical issues with single precision
+        if not use_double_precision:
+            logger.warning("Using single precision (float32) for spectral analysis. "
+                          "This may cause symmetry breaking and spurious eigenvalues for "
+                          "problems with large nullspaces or wide weight ranges. "
+                          "Consider using double precision for better numerical stability.")
+        
+        # ✅ NEW: Generalized normalization support
+        self.use_generalized_normalization = use_generalized_normalization
+        self.use_matrix_free = use_matrix_free
+        self.force_dense_gw_solver = force_dense_gw_solver
+        
+        # Initialize GW builder if generalized normalization is requested
+        self.gw_builder = None
+        if use_generalized_normalization:
+            try:
+                from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+                self.gw_builder = GWLaplacianBuilder(
+                    validate_properties=validate_properties,
+                    force_dense_solver=force_dense_gw_solver
+                )
+                logger.info(f"✅ Generalized normalization enabled with GW builder (force_dense={force_dense_gw_solver})")
+            except ImportError as e:
+                logger.error(f"Failed to import GWLaplacianBuilder: {e}")
+                self.use_generalized_normalization = False
         
         # Caching infrastructure
         self._cached_laplacian = None
@@ -161,10 +193,14 @@ class UnifiedStaticLaplacian:
         Returns:
             UnifiedStaticLaplacian instance with appropriate precision settings
         """
-        # Use double precision for large batch sizes where numerical issues are common
-        use_double_precision = batch_size >= 64
+        # Use single precision only for very large batch sizes where memory is critical
+        # Default to double precision for numerical stability (consistent with new default)
+        use_double_precision = batch_size < 128
         
-        if use_double_precision:
+        if not use_double_precision:
+            logger.warning(f"Using single precision for spectral analysis with large batch size {batch_size}. "
+                          f"This may cause numerical instability for problems with large nullspaces.")
+        else:
             logger.info(f"Using double precision for spectral analysis with batch size {batch_size}")
         
         return cls(use_double_precision=use_double_precision, **kwargs)
@@ -215,6 +251,7 @@ class UnifiedStaticLaplacian:
             # Compute eigenvalues/eigenvectors for each filtration step
             eigenvalue_sequences = []
             eigenvector_sequences = []
+            mass_matrices_sequences = []  # For M-orthogonal subspace tracking
             
             for i, param in enumerate(filtration_params):
                 # Create edge mask for this filtration parameter
@@ -225,8 +262,23 @@ class UnifiedStaticLaplacian:
                     static_laplacian, edge_mask, edge_info, construction_metadata
                 )
                 
-                # Compute eigenvalues/eigenvectors
-                eigenvals, eigenvecs = self._compute_eigenvalues(masked_laplacian)
+                # ✅ Set context for generalized eigenvalue computation
+                if self.use_generalized_normalization:
+                    self.sheaf = sheaf
+                    self.active_edges = [edge for edge, keep in edge_mask.items() if keep]
+                
+                # Compute eigenvalues/eigenvectors (and mass matrix if using generalized)
+                if self.use_generalized_normalization and self.gw_builder is not None:
+                    eigenvals, eigenvecs, mass_matrix = self._compute_eigenvalues_with_mass_matrix(masked_laplacian)
+                    mass_matrices_sequences.append(mass_matrix)
+                else:
+                    eigenvals, eigenvecs = self._compute_eigenvalues(masked_laplacian)
+                    mass_matrices_sequences.append(None)  # No mass matrix for standard eigenvalues
+                
+                # ✅ Clear context after computation
+                if self.use_generalized_normalization:
+                    delattr(self, 'sheaf')
+                    delattr(self, 'active_edges')
                 
                 eigenvalue_sequences.append(eigenvals)
                 eigenvector_sequences.append(eigenvecs)
@@ -257,13 +309,17 @@ class UnifiedStaticLaplacian:
             # - The parameter name 'increasing' refers to parameter ordering, not complexity
             filtration_direction = 'increasing'
             
-            # Pass sheaf metadata to tracker (critical for GW tracker)
+            # Pass sheaf metadata and mass matrices to tracker (critical for GW tracker)
+            # Filter out None values from mass matrices sequence
+            mass_matrices_for_tracker = [m for m in mass_matrices_sequences if m is not None] if any(m is not None for m in mass_matrices_sequences) else None
+            
             tracking_info = tracker.track_eigenspaces(
                 eigenvalue_sequences,
                 eigenvector_sequences,
                 filtration_params,
                 construction_method=construction_method,
-                sheaf_metadata=sheaf.metadata
+                sheaf_metadata=sheaf.metadata,
+                mass_matrices_sequence=mass_matrices_for_tracker
             )
             
             computation_time = time.time() - start_time
@@ -286,6 +342,34 @@ class UnifiedStaticLaplacian:
     
     def _get_or_build_laplacian(self, sheaf: Sheaf) -> Tuple[csr_matrix, LaplacianMetadata]:
         """Get cached Laplacian or build it if not cached."""
+        
+        # Check sheaf metadata for normalized Laplacian configuration
+        gw_config = sheaf.metadata.get('gw_config', {})
+        if isinstance(gw_config, dict):
+            use_normalized = gw_config.get('use_normalized_laplacian', False)
+        else:
+            use_normalized = False
+            
+        # Update generalized normalization setting based on GW config
+        if use_normalized and not self.use_generalized_normalization:
+            logger.info("Enabling generalized normalization based on GW config")
+            self.use_generalized_normalization = True
+            # Recreate GW builder if needed
+            if self.gw_builder is None:
+                try:
+                    from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+                    self.gw_builder = GWLaplacianBuilder(
+                        validate_properties=self.validate_properties,
+                        use_normalized_laplacian=use_normalized
+                    )
+                except ImportError as e:
+                    logger.error(f"Failed to import GWLaplacianBuilder: {e}")
+                    self.use_generalized_normalization = False
+        elif not use_normalized and self.use_generalized_normalization:
+            logger.info("Disabling generalized normalization based on GW config")
+            self.use_generalized_normalization = False
+            self.gw_builder = None
+        
         if not self.enable_caching or self._cached_laplacian is None:
             logger.info("Building static Laplacian")
             self._cached_laplacian, self._cached_metadata = self.laplacian_builder.build(sheaf)
@@ -353,15 +437,24 @@ class UnifiedStaticLaplacian:
     
     def _compute_gw_edge_weight(self, restriction: torch.Tensor, 
                                sheaf: Sheaf, edge: Tuple[str, str]) -> float:
-        """Extract GW cost as edge weight from sheaf metadata."""
+        """Extract raw GW cost for filtration from sheaf metadata.
+        
+        CRITICAL: Returns RAW GW costs, NOT transformed weights.
+        The filtration uses raw costs for edge selection, while the
+        GWLaplacianBuilder handles weight transformation during reconstruction.
+        """
         # Primary source: stored GW costs from construction
         gw_costs = sheaf.metadata.get('gw_costs', {})
         if edge in gw_costs:
-            return gw_costs[edge]
+            cost = gw_costs[edge]
+            logger.debug(f"🔍 GW edge {edge}: using raw cost = {cost:.6f} for filtration")
+            return cost
         
         # Fallback: compute from restriction properties using operator norm
         # This preserves the different scaling compared to Frobenius norm
-        return torch.linalg.norm(restriction, ord=2).item()
+        cost = torch.linalg.norm(restriction, ord=2).item()
+        logger.debug(f"🔍 GW edge {edge}: computed fallback cost = {cost:.6f}")
+        return cost
     
     def _create_edge_threshold_func(self, construction_method: str) -> Callable:
         """Create appropriate threshold function based on construction method."""
@@ -383,13 +476,30 @@ class UnifiedStaticLaplacian:
         """Create boolean mask for edges based on filtration parameter."""
         edge_mask = {}
         
-        for edge, info in edge_info.items():
-            keep_edge = edge_threshold_func(info['weight'], filtration_param)
-            edge_mask[edge] = keep_edge
+        # 🔍 LOG FILTRATION DETAILS
+        logger.info("=" * 60)
+        logger.info(f"📊 FILTRATION STEP: threshold = {filtration_param:.6f}")
         
-        active_edges = sum(edge_mask.values())
-        logger.debug(f"Edge mask for param {filtration_param:.4f}: "
-                    f"{active_edges}/{len(edge_mask)} edges active")
+        active_count = 0
+        for edge, info in edge_info.items():
+            weight = info['weight']
+            keep_edge = edge_threshold_func(weight, filtration_param)
+            edge_mask[edge] = keep_edge
+            if keep_edge:
+                active_count += 1
+        
+        # Log first few edge decisions for debugging
+        for i, (edge, info) in enumerate(sorted(edge_info.items())[:3]):
+            weight = info['weight']
+            keep = edge_mask[edge]
+            status = "✅ ACTIVE" if keep else "❌ INACTIVE"
+            logger.info(f"  Edge {edge}: weight={weight:.6f}, threshold={filtration_param:.6f} → {status}")
+        
+        if len(edge_info) > 3:
+            logger.info(f"  ... ({len(edge_info) - 3} more edges)")
+        
+        logger.info(f"📊 Summary: {active_count}/{len(edge_mask)} edges active")
+        logger.info("=" * 60)
         
         return edge_mask
     
@@ -466,10 +576,15 @@ class UnifiedStaticLaplacian:
         
         sheaf = metadata.sheaf_reference
         
+        # Extract normalized Laplacian flag from sheaf metadata
+        gw_config = sheaf.metadata.get('gw_config', {})
+        use_normalized = gw_config.get('use_normalized_laplacian', False) if isinstance(gw_config, dict) else False
+        
         # Create GW builder with same settings as original
         gw_builder = GWLaplacianBuilder(
             validate_properties=False,  # Skip validation for performance
-            sparsity_threshold=1e-12
+            sparsity_threshold=1e-12,
+            use_normalized_laplacian=use_normalized
         )
         
         # Build filtered Laplacian using only active edges with regularization
@@ -723,35 +838,12 @@ class UnifiedStaticLaplacian:
     def _compute_eigenvalues(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues and eigenvectors with automatic method selection."""
         
-        # Check if dense computation is forced (for PES tracker)
-        if self.force_dense_eigenvalues:
-            method = 'dense'
-            logger.debug(f"Forcing dense eigenvalue computation for PES tracker: {laplacian.shape[0]}×{laplacian.shape[0]}")
-        elif self.eigenvalue_method == 'auto':
-            # Automatic method selection: prefer dense for reliability
-            # Only use LOBPCG for very large matrices where memory becomes an issue
-            if laplacian.shape[0] > 5000:
-                # For very large matrices (>5000), use LOBPCG to save memory
-                method = 'lobpcg'
-                logger.info(f"Using LOBPCG for large matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
-            else:
-                # Default to dense method for better reliability
-                method = 'dense'
-                logger.debug(f"Using dense method for matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
-        else:
-            method = self.eigenvalue_method
+        # ✅ NEW: Use generalized normalization if enabled
+        if self.use_generalized_normalization and self.gw_builder is not None:
+            return self._compute_eigenvalues_generalized(laplacian)
         
-        try:
-            if method == 'lobpcg':
-                return self._compute_eigenvalues_lobpcg(laplacian)
-            else:
-                return self._compute_eigenvalues_dense(laplacian)
-        except Exception as e:
-            logger.warning(f"Eigenvalue computation failed with {method}, trying fallback: {e}")
-            # Try fallback sequence: lobpcg -> dense
-            if method != 'dense':
-                logger.info("Trying dense method as final fallback...")
-                return self._compute_eigenvalues_dense(laplacian)
+        # Standard eigenvalue computation
+        return self._compute_eigenvalues_standard(laplacian)
     
     def _compute_eigenvalues_lobpcg(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute eigenvalues using LOBPCG with diagonal preconditioning."""
@@ -938,6 +1030,144 @@ class UnifiedStaticLaplacian:
         except Exception as e:
             raise ComputationError(f"Dense eigenvalue computation failed: {e}")
     
+    def _compute_eigenvalues_with_mass_matrix(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute eigenvalues with mass matrix for M-orthogonal subspace tracking."""
+        if not hasattr(self, 'sheaf') or not hasattr(self, 'active_edges'):
+            raise ComputationError("Generalized normalization requires sheaf and active_edges context")
+        
+        if not self.gw_builder:
+            raise ComputationError("GW builder not available for generalized normalization")
+        
+        logger.info(f"Computing eigenvalues with mass matrix: "
+                   f"{len(self.active_edges)} active edges, matrix_free={self.use_matrix_free}")
+        
+        try:
+            # Use the robust generalized eigenvalue solver with mass matrix return
+            eigenvals_np, eigenvecs_np, mass_matrix_torch = self.gw_builder.solve_generalized_robust(
+                self.sheaf,
+                self.active_edges,
+                k=self.max_eigenvalues,
+                use_matrix_free=self.use_matrix_free,
+                return_mass_matrix=True
+            )
+            
+            # Convert to PyTorch tensors with appropriate precision
+            if self.use_double_precision:
+                eigenvals = torch.from_numpy(eigenvals_np).double()
+                eigenvecs = torch.from_numpy(eigenvecs_np).double()
+                mass_matrix = mass_matrix_torch.double()
+            else:
+                eigenvals = torch.from_numpy(eigenvals_np).float()
+                eigenvecs = torch.from_numpy(eigenvecs_np).float()
+                mass_matrix = mass_matrix_torch.float()
+            
+            logger.info(f"✅ Generalized eigenvalue computation with mass matrix: {len(eigenvals)} eigenvalues")
+            
+            return eigenvals, eigenvecs, mass_matrix
+            
+        except Exception as e:
+            logger.error(f"Generalized eigenvalue computation with mass matrix failed: {e}")
+            # Fallback: use standard method and return None for mass matrix
+            eigenvals, eigenvecs = self._compute_eigenvalues_generalized(laplacian)
+            return eigenvals, eigenvecs, None
+    
+    def _compute_eigenvalues_generalized(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
+        """✅ NEW: Compute eigenvalues using generalized eigenvalue problem L x = λ M x."""
+        if not hasattr(self, 'sheaf') or not hasattr(self, 'active_edges'):
+            raise ComputationError("Generalized normalization requires sheaf and active_edges context")
+        
+        if not self.gw_builder:
+            raise ComputationError("GW builder not available for generalized normalization")
+        
+        logger.info(f"Computing eigenvalues using generalized normalization: "
+                   f"{len(self.active_edges)} active edges, matrix_free={self.use_matrix_free}")
+        
+        try:
+            # Use the robust generalized eigenvalue solver
+            result = self.gw_builder.solve_generalized_robust(
+                self.sheaf,
+                self.active_edges,
+                k=self.max_eigenvalues,
+                use_matrix_free=self.use_matrix_free
+            )
+            
+            # ✅ DEFENSIVE: Validate tuple unpacking to prevent shape errors
+            if not isinstance(result, tuple):
+                logger.error(f"solve_generalized_robust returned non-tuple: {type(result)}")
+                raise ComputationError(f"Invalid return type from solve_generalized_robust: {type(result)}")
+            
+            if len(result) == 2:
+                eigenvals_np, eigenvecs_np = result
+                logger.debug("Unpacked 2-tuple from solve_generalized_robust")
+            elif len(result) == 3:
+                eigenvals_np, eigenvecs_np, mass_matrix = result
+                logger.debug("Unpacked 3-tuple from solve_generalized_robust (ignoring mass matrix)")
+            else:
+                logger.error(f"solve_generalized_robust returned tuple of unexpected length: {len(result)}")
+                raise ComputationError(f"Invalid tuple length from solve_generalized_robust: {len(result)}")
+            
+            # Validate that we got numpy arrays
+            if not isinstance(eigenvals_np, np.ndarray) or not isinstance(eigenvecs_np, np.ndarray):
+                logger.error(f"solve_generalized_robust returned invalid types: eigenvals={type(eigenvals_np)}, eigenvecs={type(eigenvecs_np)}")
+                raise ComputationError("Invalid return types from solve_generalized_robust")
+            
+            # Convert to PyTorch tensors with appropriate precision
+            if self.use_double_precision:
+                eigenvals = torch.from_numpy(eigenvals_np).double()
+                eigenvecs = torch.from_numpy(eigenvecs_np).double()
+            else:
+                eigenvals = torch.from_numpy(eigenvals_np).float()
+                eigenvecs = torch.from_numpy(eigenvecs_np).float()
+            
+            # Log generalized solver results
+            logger.info(f"✅ Generalized eigenvalue computation: {len(eigenvals)} eigenvalues, "
+                       f"spectrum=[{eigenvals[0]:.2e}, {eigenvals[-1]:.2e}]")
+            
+            return eigenvals, eigenvecs
+            
+        except Exception as e:
+            logger.error(f"Generalized eigenvalue computation failed: {e}")
+            # Fallback to standard eigenvalue computation
+            logger.warning("Falling back to standard eigenvalue computation")
+            return self._compute_eigenvalues_standard(laplacian)
+    
+    def _compute_eigenvalues_standard(self, laplacian: csr_matrix) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Standard eigenvalue computation (original implementation)."""
+        # Check if dense computation is forced (for PES tracker)
+        if self.force_dense_eigenvalues:
+            method = 'dense'
+            logger.debug(f"Forcing dense eigenvalue computation for PES tracker: {laplacian.shape[0]}×{laplacian.shape[0]}")
+        elif self.eigenvalue_method == 'auto':
+            # Automatic method selection: prefer dense for reliability
+            # Only use LOBPCG for very large matrices where memory becomes an issue
+            if laplacian.shape[0] > 5000:
+                # For very large matrices (>5000), use LOBPCG to save memory
+                method = 'lobpcg'
+                logger.info(f"Using LOBPCG for large matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
+            else:
+                # Default to dense method for better reliability
+                method = 'dense'
+                logger.debug(f"Using dense method for matrix: {laplacian.shape[0]}×{laplacian.shape[0]}")
+        else:
+            method = self.eigenvalue_method
+        
+        try:
+            if method == 'lobpcg':
+                return self._compute_eigenvalues_lobpcg(laplacian)
+            else:
+                return self._compute_eigenvalues_dense(laplacian)
+        except Exception as e:
+            logger.warning(f"Eigenvalue computation failed with {method}, trying fallback: {e}")
+            # Try fallback sequence: lobpcg -> dense
+            if method != 'dense':
+                logger.info("Trying dense method as final fallback...")
+                try:
+                    return self._compute_eigenvalues_dense(laplacian)
+                except Exception as e2:
+                    logger.error(f"Dense fallback also failed: {e2}")
+                    raise ComputationError(f"All eigenvalue methods failed. Last error: {e2}")
+            else:
+                raise ComputationError(f"Dense eigenvalue computation failed: {e}")
     
     def _update_masking_statistics(self, filtration_param: float, edge_mask: Dict[Tuple, bool], 
                                   edge_info: Dict):
