@@ -41,6 +41,14 @@ from .dtw_similarity import (
     create_filtration_dtw_comparator,
     quick_dtw_comparison,
 )
+from .isw_distance import (
+    EigenvalueISW,
+    create_isw_comparator,
+    quick_isw_comparison,
+)
+from .result_printer import (
+    print_alpha_flow_results,
+)
 
 __all__ = [
     "setup_logger",
@@ -66,4 +74,8 @@ __all__ = [
     "FiltrationDTW",
     "create_filtration_dtw_comparator",
     "quick_dtw_comparison",
+    "EigenvalueISW",
+    "create_isw_comparator",
+    "quick_isw_comparison",
+    "print_alpha_flow_results",
 ]

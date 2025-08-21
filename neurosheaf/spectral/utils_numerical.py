@@ -8,16 +8,35 @@ tracking at machine precision.
 import torch
 import numpy as np
 import scipy.linalg
+import scipy.sparse as sp
+from scipy.sparse.linalg import LinearOperator, eigsh
+from scipy.linalg import expm
 import logging
 from typing import Dict, List, Optional, Tuple, Union, Any
 import time
 import warnings
+from dataclasses import dataclass
 
 from ..io.config import H0Config, DEFAULT_H0_CONFIG
 from ..io.types import CertificateResult, TransportValidation
 from ..utils.logging import setup_logger
 
 logger = setup_logger(__name__)
+
+
+@dataclass
+class SmallestEigResult:
+    """Result from smallest eigenvalue computation with metadata."""
+    eigenvalues: np.ndarray
+    eigenvectors: Optional[np.ndarray] = None
+    converged: bool = True
+    num_iterations: int = 0
+    residual_norms: Optional[np.ndarray] = None
+    warnings: List[str] = None
+
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
 
 
 def setup_deterministic_execution(cfg: H0Config) -> None:
@@ -625,6 +644,443 @@ def compute_numerical_certificates(delta_tilde: torch.Tensor,
         logger.error(f"Certificate validation error: {e}")
     
     return result
+
+
+def hutchinson_trace_power(L: LinearOperator, 
+                          power: int, 
+                          probes: int = 64,
+                          rng: Optional[np.random.Generator] = None) -> Tuple[float, float]:
+    """Estimate Tr(L^power) via Rademacher probes.
+    
+    Uses the Hutchinson trace estimator with Rademacher random vectors (±1 entries)
+    to compute an unbiased estimate of Tr(L^k) for arbitrary powers k.
+    
+    The estimator works as: Tr(L^k) ≈ (1/m) * Σᵢ vᵢᵀ L^k vᵢ
+    where vᵢ are Rademacher random vectors and m is the number of probes.
+    
+    Args:
+        L: Linear operator to compute trace of
+        power: Power k to compute Tr(L^k)
+        probes: Number of random probe vectors (default 64, use 128 for tighter CI)
+        rng: Random number generator for reproducibility
+        
+    Returns:
+        mean_estimate: Mean estimate of Tr(L^power)
+        empirical_std: Empirical standard deviation for variance control
+        
+    Mathematical Properties:
+        - Unbiased: E[estimate] = Tr(L^k)
+        - Variance: Var[estimate] ≈ O(1/probes)
+        - Works for any LinearOperator (dense or sparse)
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    if L.shape[0] != L.shape[1]:
+        raise ValueError(f"Linear operator must be square, got shape {L.shape}")
+    
+    n = L.shape[0]
+    estimates = np.zeros(probes)
+    
+    for i in range(probes):
+        # Generate Rademacher probe vector (±1 entries)
+        v = 2 * rng.integers(0, 2, size=n) - 1
+        v = v.astype(np.float64)
+        
+        # Compute L^k v by repeatedly applying L
+        Lkv = v.copy()
+        for _ in range(power):
+            Lkv = L @ Lkv
+            
+        # Compute vᵀ L^k v
+        estimates[i] = np.dot(v, Lkv)
+    
+    mean_estimate = np.mean(estimates)
+    empirical_std = np.std(estimates, ddof=1) if probes > 1 else 0.0
+    
+    logger.debug(f"Hutchinson Tr(L^{power}): {mean_estimate:.6e} ± {empirical_std:.6e} "
+                f"(probes={probes})")
+    
+    return mean_estimate, empirical_std
+
+
+def smallest_eigs_generalized(L: LinearOperator, 
+                             D: LinearOperator, 
+                             k: int = 16, 
+                             sigma: float = 1e-6, 
+                             maxiter: int = 1000,
+                             random_state: Optional[np.random.Generator] = None,
+                             return_vecs: bool = False) -> SmallestEigResult:
+    """Robust smallest eigenpairs via shift-invert with automatic regularization.
+    
+    Solves the generalized eigenvalue problem L x = λ D x for the k smallest
+    eigenvalues using shift-invert mode with automatic regularization for
+    numerical stability.
+    
+    Uses eigsh(L, k, M=D, which='LM', sigma=σ) with σ>0 to find smallest 
+    eigenvalues. Internally factorizes A = L - σD using robust sparse LU,
+    not Cholesky, to handle potentially indefinite shifted matrices.
+    
+    Args:
+        L: System matrix (LinearOperator or sparse matrix)
+        D: Mass matrix (LinearOperator or sparse matrix) 
+        k: Number of smallest eigenvalues to compute
+        sigma: Shift parameter (σ > 0 for smallest eigenvalues)
+        maxiter: Maximum number of iterations
+        random_state: Random number generator for reproducibility
+        return_vecs: Whether to return eigenvectors
+        
+    Returns:
+        SmallestEigResult with eigenvalues, optional eigenvectors, and metadata
+        
+    Numerical Properties:
+        - Uses robust sparse LU factorization (SuperLU/UMFPACK)
+        - Automatically adds εI regularization if factorization fails
+        - Clips tiny negative eigenvalues: λ_clipped = max(λ, -1e-12)
+        - Sorted in ascending order (smallest first)
+    """
+    try:
+        # Set up random state if provided
+        if random_state is not None:
+            # eigsh doesn't directly accept np.random.Generator, so we use the legacy interface
+            np.random.seed(random_state.integers(0, 2**31))
+        
+        # Ensure k doesn't exceed matrix dimensions
+        n = L.shape[0]
+        k_actual = min(k, n - 1)
+        
+        if k_actual <= 0:
+            # Handle trivial case
+            result = SmallestEigResult(
+                eigenvalues=np.array([]),
+                eigenvectors=np.zeros((n, 0)) if return_vecs else None,
+                converged=True,
+                num_iterations=0
+            )
+            return result
+        
+        warnings_list = []
+        
+        try:
+            # Use shift-invert mode to find smallest eigenvalues
+            # sigma > 0 transforms smallest eigenvalues to largest of (L - σD)^{-1}
+            if return_vecs:
+                eigenvalues, eigenvectors, info = eigsh(
+                    L, k=k_actual, M=D, which='LM', sigma=sigma,
+                    maxiter=maxiter, return_eigenvectors=True, 
+                    mode='normal'  # Use normal mode for better stability
+                )
+            else:
+                eigenvalues = eigsh(
+                    L, k=k_actual, M=D, which='LM', sigma=sigma,
+                    maxiter=maxiter, return_eigenvectors=False,
+                    mode='normal'
+                )
+                eigenvectors = None
+            
+            # Check convergence
+            converged = True  # eigsh raises exception if not converged
+            num_iterations = maxiter  # eigsh doesn't return actual iterations
+            
+        except Exception as e:
+            # If shift-invert fails, try adding regularization
+            logger.warning(f"Standard shift-invert failed: {e}, trying with regularization")
+            
+            # Add small regularization to improve conditioning
+            eps = 1e-12
+            if hasattr(L, 'shape') and hasattr(D, 'shape'):
+                n = L.shape[0]
+                # Create regularized system: (L + εI) x = λ D x
+                if hasattr(L, 'todense'):  # Sparse matrix
+                    L_reg = L + eps * sp.identity(n, format='csr')
+                else:  # LinearOperator - create regularized version
+                    I = sp.identity(n, format='csr')
+                    L_reg = LinearOperator(
+                        shape=L.shape,
+                        matvec=lambda x: L @ x + eps * x,
+                        dtype=L.dtype
+                    )
+                
+                try:
+                    if return_vecs:
+                        eigenvalues, eigenvectors, info = eigsh(
+                            L_reg, k=k_actual, M=D, which='LM', sigma=sigma,
+                            maxiter=maxiter, return_eigenvectors=True,
+                            mode='normal'
+                        )
+                    else:
+                        eigenvalues = eigsh(
+                            L_reg, k=k_actual, M=D, which='LM', sigma=sigma,
+                            maxiter=maxiter, return_eigenvectors=False,
+                            mode='normal'
+                        )
+                        eigenvectors = None
+                    
+                    warnings_list.append(f"Used ε={eps} regularization for numerical stability")
+                    converged = True
+                    num_iterations = maxiter
+                    
+                except Exception as e2:
+                    logger.error(f"Regularized shift-invert also failed: {e2}")
+                    # Return empty result with error information
+                    return SmallestEigResult(
+                        eigenvalues=np.array([]),
+                        eigenvectors=np.zeros((n, 0)) if return_vecs else None,
+                        converged=False,
+                        num_iterations=maxiter,
+                        warnings=[f"Both standard and regularized solvers failed: {e2}"]
+                    )
+            else:
+                raise e
+        
+        # Sort eigenvalues in ascending order (smallest first)
+        sort_idx = np.argsort(eigenvalues)
+        eigenvalues = eigenvalues[sort_idx]
+        if eigenvectors is not None:
+            eigenvectors = eigenvectors[:, sort_idx]
+        
+        # Clip tiny negative eigenvalues (numerical errors)
+        negative_mask = eigenvalues < 0
+        if np.any(negative_mask):
+            n_negative = np.sum(negative_mask)
+            min_negative = np.min(eigenvalues[negative_mask])
+            
+            # Clip to small positive value if they're tiny
+            if min_negative > -1e-12:
+                eigenvalues[negative_mask] = -1e-12
+                warnings_list.append(
+                    f"Clipped {n_negative} tiny negative eigenvalues (min: {min_negative:.2e})"
+                )
+            else:
+                warnings_list.append(
+                    f"Found {n_negative} significant negative eigenvalues (min: {min_negative:.2e})"
+                )
+        
+        # Log results
+        if len(eigenvalues) > 0:
+            logger.debug(f"Shift-invert solver: computed {len(eigenvalues)} eigenvalues, "
+                        f"range [{eigenvalues[0]:.6e}, {eigenvalues[-1]:.6e}], "
+                        f"converged={converged}")
+        
+        return SmallestEigResult(
+            eigenvalues=eigenvalues,
+            eigenvectors=eigenvectors,
+            converged=converged,
+            num_iterations=num_iterations,
+            warnings=warnings_list
+        )
+        
+    except Exception as e:
+        logger.error(f"Shift-invert eigenvalue solver failed: {e}")
+        n = L.shape[0] if hasattr(L, 'shape') else 0
+        return SmallestEigResult(
+            eigenvalues=np.array([]),
+            eigenvectors=np.zeros((n, 0)) if return_vecs else None,
+            converged=False,
+            num_iterations=0,
+            warnings=[f"Solver completely failed: {e}"]
+        )
+
+
+def heat_trace_slq(L: LinearOperator, 
+                   t: float, 
+                   probes: int = 64, 
+                   iters: int = 30, 
+                   rng: Optional[np.random.Generator] = None) -> Tuple[float, float]:
+    """SLQ estimate of Tr(exp(-tL)) - numerically stable and unbiased.
+    
+    Uses Stochastic Lanczos Quadrature to estimate the heat trace Tr(exp(-tL))
+    for any positive time t. The method is based on Lanczos approximation of
+    the matrix exponential applied to random probe vectors.
+    
+    The algorithm works by:
+    1. Generate m random probe vectors
+    2. For each probe, run Lanczos iteration to get T_k tridiagonal matrix
+    3. Compute e^(-t*T_k) * e_1 where e_1 = [1,0,...,0]
+    4. Average over all probes to get final estimate
+    
+    Args:
+        L: Linear operator (should be symmetric positive semidefinite)
+        t: Time parameter (t > 0)
+        probes: Number of random probe vectors (default 64, use 128 for tighter CI)
+        iters: Number of Lanczos iterations (default 30)
+        rng: Random number generator for reproducibility
+        
+    Returns:
+        mean_estimate: Mean estimate of Tr(exp(-tL))
+        empirical_std: Empirical standard deviation for variance control
+        
+    Mathematical Properties:
+        - Unbiased: E[estimate] = Tr(exp(-tL))
+        - Variance: Var[estimate] ~ O(1/probes)
+        - Numerically stable for all t > 0
+        - Works with any symmetric LinearOperator
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    if L.shape[0] != L.shape[1]:
+        raise ValueError(f"Linear operator must be square, got shape {L.shape}")
+    
+    if t <= 0:
+        raise ValueError(f"Time parameter must be positive, got t={t}")
+    
+    n = L.shape[0]
+    estimates = np.zeros(probes)
+    
+    for probe_idx in range(probes):
+        # Generate random probe vector (Gaussian)
+        v = rng.standard_normal(n)
+        v = v / np.linalg.norm(v)  # Normalize
+        
+        # Run Lanczos iteration
+        alpha = np.zeros(iters)  # Diagonal elements of tridiagonal matrix
+        beta = np.zeros(iters-1)  # Off-diagonal elements
+        
+        # Storage for Lanczos vectors
+        q_prev = np.zeros(n)
+        q_curr = v.copy()
+        
+        for j in range(iters):
+            # Apply linear operator
+            w = L @ q_curr
+            
+            # Compute diagonal element
+            alpha[j] = np.dot(q_curr, w)
+            
+            # Orthogonalize against previous vector
+            if j > 0:
+                w = w - beta[j-1] * q_prev
+            
+            # Orthogonalize against current vector
+            w = w - alpha[j] * q_curr
+            
+            # Compute off-diagonal element and prepare for next iteration
+            if j < iters - 1:
+                beta[j] = np.linalg.norm(w)
+                
+                # Check for breakdown
+                if beta[j] < 1e-14:
+                    # Lanczos breakdown - truncate
+                    alpha = alpha[:j+1]
+                    beta = beta[:j]
+                    break
+                
+                # Prepare for next iteration
+                q_prev = q_curr.copy()
+                q_curr = w / beta[j]
+        
+        # Build tridiagonal matrix T_k
+        k = len(alpha)
+        if k == 1:
+            T = np.array([[alpha[0]]])
+        else:
+            T = np.diag(alpha) + np.diag(beta, 1) + np.diag(beta, -1)
+        
+        # Compute exp(-t*T) using dense matrix exponential
+        # This is efficient since T is small (k x k with k ~= iters)
+        try:
+            exp_neg_tT = expm(-t * T)
+            
+            # Extract trace contribution: ||v||^2 * e_1^T exp(-t*T) e_1
+            # Since v was normalized, ||v||^2 = 1
+            trace_contrib = exp_neg_tT[0, 0] * (np.linalg.norm(v)**2)
+            estimates[probe_idx] = trace_contrib
+            
+        except Exception as e:
+            logger.warning(f"Matrix exponential failed for probe {probe_idx}: {e}")
+            # Use fallback: exp(-t*alpha[0]) if only one Lanczos step
+            if k >= 1:
+                estimates[probe_idx] = np.exp(-t * alpha[0])
+            else:
+                estimates[probe_idx] = 0.0
+    
+    # Average over probes to get final estimate
+    mean_estimate = n * np.mean(estimates)  # Factor of n from trace normalization
+    empirical_std = n * np.std(estimates, ddof=1) if probes > 1 else 0.0
+    
+    logger.debug(f"Heat trace SLQ at t={t:.6e}: {mean_estimate:.6e} ± {empirical_std:.6e} "
+                f"(probes={probes}, lanczos_iters={iters})")
+    
+    return mean_estimate, empirical_std
+
+
+def estimate_lambda_max(L: LinearOperator, 
+                       iters: int = 40,
+                       rng: Optional[np.random.Generator] = None) -> float:
+    """Power iteration for crude λ_max estimation.
+    
+    Uses the power method to estimate the largest eigenvalue of a symmetric
+    positive semidefinite linear operator. This is used primarily for automatic
+    t-grid generation in diffusion flow analysis.
+    
+    The power method iteratively applies L to a random vector and normalizes:
+    v_{k+1} = L v_k / ||L v_k||
+    
+    The largest eigenvalue is approximated by the Rayleigh quotient:
+    λ_max ≈ v_k^T L v_k / ||v_k||^2
+    
+    Args:
+        L: Linear operator (should be symmetric positive semidefinite)
+        iters: Number of power iterations (default 40)
+        rng: Random number generator for reproducibility
+        
+    Returns:
+        Estimated largest eigenvalue λ_max
+        
+    Mathematical Properties:
+        - Converges to largest eigenvalue if it's simple
+        - Convergence rate: O((λ_2/λ_1)^k) where λ_1 > λ_2
+        - Works for any symmetric LinearOperator
+        - Cheap approximation suitable for t-grid generation
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    if L.shape[0] != L.shape[1]:
+        raise ValueError(f"Linear operator must be square, got shape {L.shape}")
+    
+    n = L.shape[0]
+    
+    if n == 0:
+        return 0.0
+    
+    # Initialize with random vector
+    v = rng.standard_normal(n)
+    v_norm = np.linalg.norm(v)
+    
+    if v_norm == 0:
+        # Fallback to ones vector
+        v = np.ones(n)
+        v_norm = np.sqrt(n)
+    
+    v = v / v_norm
+    
+    lambda_max_est = 0.0
+    
+    for i in range(iters):
+        # Apply linear operator
+        Lv = L @ v
+        
+        # Compute Rayleigh quotient as eigenvalue estimate
+        lambda_max_est = np.dot(v, Lv)
+        
+        # Normalize for next iteration
+        Lv_norm = np.linalg.norm(Lv)
+        
+        if Lv_norm < 1e-14:
+            # Near-zero vector, likely converged to zero eigenspace
+            logger.debug(f"Power iteration converged to zero eigenspace at iteration {i}")
+            break
+        
+        v = Lv / Lv_norm
+    
+    # Ensure non-negative (for positive semidefinite matrices)
+    lambda_max_est = max(lambda_max_est, 0.0)
+    
+    logger.debug(f"Power method λ_max estimate: {lambda_max_est:.6e} ({iters} iterations)")
+    
+    return lambda_max_est
 
 
 def validate_transport_properties(T_tilde: torch.Tensor,

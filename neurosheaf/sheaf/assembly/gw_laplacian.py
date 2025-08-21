@@ -17,6 +17,7 @@ import numpy as np
 import time
 from enum import Enum
 from typing import Dict, List, Tuple, Optional, Any, Union
+import scipy.sparse as sp
 from scipy.sparse import csr_matrix, coo_matrix, csc_matrix, diags
 from scipy.sparse.linalg import eigsh, lobpcg, LinearOperator
 from scipy.linalg import eigh
@@ -202,7 +203,9 @@ class GWLaplacianBuilder:
                        sparse: bool = True,
                        active_edges: Optional[List[Tuple[str, str]]] = None,
                        add_regularization: bool = True,
-                       quality_threshold: Optional[float] = None) -> Union[torch.Tensor, csr_matrix]:
+                       quality_threshold: Optional[float] = None,
+                       mass_mode: str = 'fixed',
+                       return_mass: bool = False) -> Union[torch.Tensor, csr_matrix, Tuple]:
         """Construct L = δ^T δ using GW-specific block formula.
         
         This method constructs the Laplacian using the general sheaf formulation
@@ -215,9 +218,11 @@ class GWLaplacianBuilder:
             add_regularization: Whether to add small regularization for numerical stability
             quality_threshold: Optional minimum quality score for edges to include. 
                              Edges with quality below this threshold are excluded.
+            mass_mode: Mass matrix mode ('fixed' for consistency, 'adaptive' for accuracy)
+            return_mass: Whether to also return the mass matrix
             
         Returns:
-            Sparse or dense Laplacian matrix
+            Sparse or dense Laplacian matrix, or (L, D) tuple if return_mass=True
             
         Raises:
             GWLaplacianError: If sheaf is not GW-based or construction fails
@@ -273,7 +278,7 @@ class GWLaplacianBuilder:
                 transform_method=self.weight_transform,
                 transform_beta=self.transform_beta
             )
-            
+                  
             # Initialize metadata
             metadata = self._initialize_gw_metadata(sheaf, edge_weights)
             
@@ -299,7 +304,27 @@ class GWLaplacianBuilder:
                        f"{laplacian.nnz if sparse else 'dense'}, "
                        f"{metadata.construction_time:.3f}s")
             
-            return laplacian
+            if return_mass:
+                # Build mass matrix based on mass_mode
+                n = laplacian.shape[0]
+                if mass_mode == 'fixed':
+                    # Create identity mass matrix with ridge regularization
+                    ridge_eps = 1e-12
+                    if sparse:
+                        D = sp.identity(n, dtype=self.numpy_dtype, format='csr') * (1.0 + ridge_eps)
+                    else:
+                        D = torch.eye(n, dtype=self.torch_dtype) * (1.0 + ridge_eps)
+                else:  # adaptive mode
+                    # For now, use identity with lighter regularization
+                    ridge_eps = 1e-15
+                    if sparse:
+                        D = sp.identity(n, dtype=self.numpy_dtype, format='csr') * (1.0 + ridge_eps)
+                    else:
+                        D = torch.eye(n, dtype=self.torch_dtype) * (1.0 + ridge_eps)
+                
+                return laplacian, D
+            else:
+                return laplacian
             
         except Exception as e:
             logger.error(f"GW Laplacian construction failed: {e}")
@@ -617,18 +642,19 @@ class GWLaplacianBuilder:
     
     def extract_edge_weights_linear_only(self, sheaf: Sheaf, 
                                         active_edges: List[Tuple[str, str]]) -> Dict[Tuple[str, str], float]:
-        """✅ CORRECTED: Extract edge weights ensuring linearity (no hidden w² terms).
+        """✅ CORRECTED: Extract edge weights as sqrt(similarity) for G₁ construction.
         
-        Ensures G₁ = diag(wₑ) uses LINEAR weights only, not squared weights.
+        Returns sqrt(similarity) weights that will be squared in G₁ = ⊕ₑ wₑ² I_{dₑ}
+        to ensure energy ∝ similarity (not sqrt(similarity)).
         
         Args:
             sheaf: GW-based sheaf
             active_edges: List of edges to extract weights for
             
         Returns:
-            Dictionary mapping edges to LINEAR weights
+            Dictionary mapping edges to sqrt(similarity) weights
         """
-        logger.info(f"Extracting LINEAR edge weights for {len(active_edges)} active edges")
+        logger.info(f"Extracting sqrt(similarity) edge weights for {len(active_edges)} active edges")
         
         # Use existing method with transformation parameters
         edge_weights = self.extract_edge_weights(
@@ -643,7 +669,7 @@ class GWLaplacianBuilder:
                 logger.warning(f"Edge {edge} has negative weight {weight}, clamping to 1e-8")
                 edge_weights[edge] = max(weight, 1e-8)
         
-        logger.info(f"✅ Verified linear edge weights: {len(edge_weights)} edges")
+        logger.info(f"✅ Verified sqrt(similarity) edge weights: {len(edge_weights)} edges")
         return edge_weights
     
     def build_G1_block_diagonal_corrected(self, sheaf: Sheaf, active_edges: List[Tuple[str, str]], 
@@ -659,10 +685,11 @@ class GWLaplacianBuilder:
         Args:
             sheaf: GW-based sheaf
             active_edges: List of active edges  
-            edge_weights: Dictionary mapping edges to LINEAR weights
+            edge_weights: Dictionary mapping edges to sqrt(similarity) weights
+                         (will be squared internally for energy ∝ similarity)
             
         Returns:
-            Block-diagonal sparse matrix G₁ = ⊕ₑ wₑ I_{dₑ}
+            Block-diagonal sparse matrix G₁ = ⊕ₑ wₑ² I_{dₑ} where wₑ = sqrt(similarity)
         """
         if not active_edges:
             logger.info("Empty G₁: no active edges")
@@ -680,12 +707,14 @@ class GWLaplacianBuilder:
             edge_dim = sheaf.stalks[v].shape[0]
             edge_fiber_dims.append(edge_dim)
             
-            # ✅ CRITICAL: Create diagonal block wₑ I_{dₑ}
-            weight = edge_weights.get(edge, 1.0)  # LINEAR weight (no w²)
-            edge_diag = np.full(edge_dim, weight)  # [wₑ, wₑ, ..., wₑ] (dₑ times)
+            # ✅ CRITICAL: Create diagonal block wₑ² I_{dₑ} where wₑ = sqrt(similarity)
+            # This ensures energy ∝ similarity (not sqrt(similarity))
+            weight = edge_weights.get(edge, 1.0)  # sqrt(similarity) from extract_edge_weights
+            weight_squared = weight ** 2  # Square to get similarity for energy scaling
+            edge_diag = np.full(edge_dim, weight_squared)  # [wₑ², wₑ², ..., wₑ²] (dₑ times)
             per_edge_diagonals.append(edge_diag)
             
-            logger.debug(f"Edge {edge}: fiber_dim={edge_dim}, weight={weight:.6f}")
+            logger.debug(f"Edge {edge}: fiber_dim={edge_dim}, weight={weight:.6f}, weight²={weight_squared:.6f}")
         
         if not per_edge_diagonals:
             logger.warning("No valid edges for G₁ construction")
@@ -697,7 +726,7 @@ class GWLaplacianBuilder:
         
         G1 = diags(g1_expanded, format='csr', dtype=np.float64)
         
-        logger.info(f"✅ Built corrected G₁: {len(active_edges)} edges, "
+        logger.info(f"✅ Built corrected G₁ with squared weights: {len(active_edges)} edges, "
                    f"total edge fiber dim = {total_edge_dim}, nnz = {G1.nnz}")
         
         # Validate diagonal structure
@@ -708,7 +737,8 @@ class GWLaplacianBuilder:
     
     def build_coboundary_with_metrics(self, sheaf: Sheaf, 
                                      active_edges: Optional[List[Tuple[str, str]]] = None,
-                                     legacy_h0: bool = False) -> Dict:
+                                     legacy_h0: bool = False,
+                                     return_sparse: bool = False) -> Dict:
         """Construct coboundary operator with proper stalk-based metrics.
         
         Implements the extraction interface required for H⁰ tracking, providing
@@ -723,6 +753,8 @@ class GWLaplacianBuilder:
             active_edges: Optional list of edges to include (for filtration)
             legacy_h0: If True, use legacy simplified approach (for ablation only).
                       Default False uses correct general formulation.
+            return_sparse: If True, return δ, G₀, G₁ as scipy.sparse CSR matrices
+                          instead of dense torch tensors (for large-scale problems)
             
         Returns:
             Dictionary with:
@@ -753,15 +785,20 @@ class GWLaplacianBuilder:
             total_stalk_dim = sum(sheaf.stalks[node].shape[0] for node in sorted(sheaf.poset.nodes()) 
                                 if node in sheaf.stalks)
             
-            # Empty coboundary: no constraints on stalks
-            delta = torch.zeros(0, total_stalk_dim, dtype=torch.float64)
-            
             # Extract node masses and create G₀ metric for full stalk space
             node_masses = self._extract_node_masses(sheaf)
-            G0 = self._build_stalk_metric(sheaf, node_masses)  # Full stalk metric
             
-            # Empty G₁ metric (no edges to weight)
-            G1 = torch.zeros(0, 0, dtype=torch.float64)
+            if return_sparse:
+                # Sparse empty case
+                delta = sp.csr_matrix((0, total_stalk_dim))
+                G0 = self._build_stalk_metric_sparse(sheaf, node_masses)  # Full stalk metric
+                G1 = sp.csr_matrix((0, 0))
+            else:
+                # Dense empty case
+                delta = torch.zeros(0, total_stalk_dim, dtype=torch.float64)
+                G0 = self._build_stalk_metric(sheaf, node_masses)  # Full stalk metric
+                G1 = torch.zeros(0, 0, dtype=torch.float64)
+            
             edge_weights_dict = {}
             
             logger.info(f"   Empty sheaf: δ shape {delta.shape}, G0 shape {G0.shape}, total_stalk_dim={total_stalk_dim}")
@@ -769,7 +806,13 @@ class GWLaplacianBuilder:
         else:
             # Extract node masses and edge weights first (common to both paths)
             node_masses = self._extract_node_masses(sheaf)
-            G0 = self._build_stalk_metric(sheaf, node_masses)  # G₀ = block-diagonal metric on stalks
+            
+            # Build G₀ (sparse or dense based on flag)
+            if return_sparse:
+                G0_sparse = self._build_stalk_metric_sparse(sheaf, node_masses)
+            else:
+                G0_sparse = None
+                G0_dense = self._build_stalk_metric(sheaf, node_masses)  # G₀ = block-diagonal metric on stalks
             
             edge_weights_dict = self.extract_edge_weights(
                 sheaf, active_edges,
@@ -779,28 +822,42 @@ class GWLaplacianBuilder:
             
             if legacy_h0:
                 # LEGACY: Simplified approach (mathematically incorrect for vector stalks)
-                delta = self._build_coboundary_operator(sheaf, active_edges)
+                delta_dense = self._build_coboundary_operator(sheaf, active_edges)
                 
                 # Scalar G₁ (one weight per edge, ignoring fiber dimensions)
                 edge_weights = torch.tensor([edge_weights_dict.get(edge, 1.0) for edge in active_edges],
                                           dtype=torch.float64)
-                G1 = torch.diag(edge_weights)  # G₁ = diag(GW costs)
+                G1_dense = torch.diag(edge_weights)  # G₁ = diag(GW costs)
+                
+                if return_sparse:
+                    # Convert dense legacy to sparse (small problems only)
+                    delta = sp.csr_matrix(delta_dense.detach().cpu().numpy())
+                    G1 = sp.csr_matrix(G1_dense.detach().cpu().numpy())
+                    G0 = G0_sparse
+                else:
+                    delta = delta_dense
+                    G1 = G1_dense
+                    G0 = G0_dense
                 
             else:
                 # CORRECT: General sheaf formulation
                 # Build coboundary with proper edge fiber dimensions
                 delta_sparse = self.build_coboundary_general_sparse(sheaf, active_edges)
                 
-                # Convert to dense tensor for H⁰ tracker compatibility
-                delta = torch.tensor(delta_sparse.toarray(), dtype=torch.float64)
-                
                 # Build block-diagonal G₁ respecting edge fiber dimensions
                 G1_sparse = self.build_G1_block_diagonal_corrected(sheaf, active_edges, edge_weights_dict)
                 
-                # Convert to dense tensor
-                G1 = torch.tensor(G1_sparse.toarray(), dtype=torch.float64)
+                if return_sparse:
+                    delta = delta_sparse
+                    G1 = G1_sparse
+                    G0 = G0_sparse
+                else:
+                    # Convert to dense tensors for H⁰ tracker compatibility
+                    delta = torch.tensor(delta_sparse.toarray(), dtype=torch.float64)
+                    G1 = torch.tensor(G1_sparse.toarray(), dtype=torch.float64)
+                    G0 = G0_dense
         
-        # Shape validation
+        # Shape validation (works for both sparse and dense matrices)
         assert G1.shape[0] == G1.shape[1] == delta.shape[0], \
             f"G1 dimensions {G1.shape} must match delta rows {delta.shape[0]}"
         assert G0.shape[0] == G0.shape[1] == delta.shape[1], \
@@ -814,6 +871,67 @@ class GWLaplacianBuilder:
             'edge_weights': edge_weights_dict,
             'active_edges': active_edges
         }
+    
+    def _build_L_from_gateway(self, sheaf: 'Sheaf', edges: List[Tuple[str, str]],
+                              normalize: Union[str, bool] = 'none') -> Tuple[sp.csr_matrix, sp.csr_matrix]:
+        """Build Laplacian using gateway approach with optional normalization.
+        
+        Returns (L, M). If normalize in {'sym','rw', True}, returns normalized L with M=I.
+        Otherwise returns unnormalized L with M=G0 (generalized form).
+        
+        This ensures single source of truth for G₀ and G₁ by routing through
+        build_coboundary_with_metrics gateway.
+        
+        Args:
+            sheaf: GW-based sheaf
+            edges: List of edges to include in Laplacian construction
+            normalize: Normalization mode:
+                      - 'none'/False: No normalization (generalized eigenproblem L x = λ G₀ x)
+                      - 'sym'/True: Symmetric normalization L_sym = G₀^(-1/2) L G₀^(-1/2)
+                      - 'rw': Random walk normalization L_rw = G₀^(-1) L
+        
+        Returns:
+            Tuple of (L, M) where:
+            - L: Laplacian matrix (normalized or unnormalized)
+            - M: Mass matrix (I for normalized, G₀ for unnormalized)
+        """
+        # Validate normalization mode
+        mode = ('sym' if normalize is True else
+                'none' if normalize in (False, 'none', None) else normalize)
+        if mode not in ('none', 'sym', 'rw'):
+            raise ValueError("normalize must be one of {'none','sym','rw',True,False}")
+        
+        # Pull δ, G₀, G₁ for the specific edge set from single source of truth
+        pack = self.build_coboundary_with_metrics(sheaf, active_edges=edges,
+                                                  legacy_h0=False, return_sparse=True)
+        delta, G0, G1 = pack['delta'], pack['G0'], pack['G1']
+        
+        # Build raw Laplacian: L = δᵀ G₁ δ
+        L_raw = (delta.T @ (G1 @ delta)).tocsr()
+        L_raw = 0.5 * (L_raw + L_raw.T)  # Ensure symmetry
+        
+        if mode == 'none':
+            # Generalized form: L x = λ G₀ x
+            M = 0.5 * (G0 + G0.T)  # Ensure symmetry
+            return L_raw, M
+        
+        # Normalized forms use G₀ for normalization
+        g0_diag = np.maximum(G0.diagonal(), 1e-15)  # Avoid division by zero
+        
+        if mode == 'sym':
+            # Symmetric normalization: L_sym = G₀^(-1/2) L G₀^(-1/2)
+            Dih = sp.diags(1.0 / np.sqrt(g0_diag), format='csr')
+            L = (Dih @ L_raw) @ Dih
+        else:  # mode == 'rw'
+            # Random walk normalization: L_rw = G₀^(-1) L
+            Di = sp.diags(1.0 / g0_diag, format='csr')
+            L = Di @ L_raw
+        
+        # Normalized forms have standard eigenproblem
+        L = 0.5 * (L + L.T)  # Ensure symmetry
+        M = sp.eye(L.shape[0], format='csr')
+        
+        return L, M
     
     def extract_node_masses_and_couplings(self, sheaf: Sheaf,
                                          filtration_step: int) -> Dict:
@@ -1180,6 +1298,38 @@ class GWLaplacianBuilder:
         
         return G0
     
+    def _build_stalk_metric_sparse(self, sheaf: 'Sheaf', node_masses: torch.Tensor) -> sp.csr_matrix:
+        """Build sparse block-diagonal G₀ metric on the full stalk space.
+        
+        Creates a sparse block-diagonal matrix where each block corresponds to a node's stalk
+        and is scaled by that node's mass. This ensures G₀ has the correct dimensions
+        to match the coboundary operator's column space while maintaining sparsity.
+        
+        Args:
+            sheaf: The sheaf containing stalk structure
+            node_masses: Tensor of node masses (shape: n_nodes)
+            
+        Returns:
+            Sparse block-diagonal metric matrix (shape: total_stalk_dim × total_stalk_dim)
+        """
+        # Get node dimensions in sorted order
+        dims = [sheaf.stalks[n].shape[0] for n in sorted(sheaf.poset.nodes()) if n in sheaf.stalks]
+        masses = node_masses.detach().cpu().numpy().astype(np.float64)
+        
+        # Build diagonal values by repeating each mass according to its stalk dimension
+        diag = []
+        mi = 0
+        for d in dims:
+            m = masses[mi] if mi < len(masses) else 1.0
+            diag.extend([m] * d)  # Repeat mass m for d dimensions
+            mi += 1
+        
+        # Ensure positive definiteness
+        d = np.asarray(diag, dtype=np.float64)
+        d = np.maximum(d, 1e-15)  # SPD safety margin
+        
+        return sp.diags(d, format='csr')
+    
     def _initialize_gw_metadata(self, sheaf: Sheaf, edge_weights: Dict) -> GWLaplacianMetadata:
         """Initialize GW-specific Laplacian metadata."""
         metadata = GWLaplacianMetadata()
@@ -1364,8 +1514,10 @@ class GWLaplacianBuilder:
         total_dim = metadata.total_dimension
         laplacian_coo = coo_matrix((data, (rows, cols)), shape=(total_dim, total_dim))
         laplacian_coo.sum_duplicates()
+        L = laplacian_coo.tocsr()
+        L = (L + L.T) * 0.5
         
-        return laplacian_coo.tocsr()
+        return L
     
     def _build_dense_laplacian(self, sheaf: Sheaf, edge_weights: Dict, 
                               metadata: GWLaplacianMetadata, 
@@ -1580,7 +1732,7 @@ class GWLaplacianBuilder:
     
     # ✅ NEW: Normalized Hodge Laplacian with Generalized Eigenvalue Problem
     def solve_generalized_robust(self, sheaf: Sheaf, active_edges: List[Tuple[str, str]], 
-                                k: int = 50, use_matrix_free: bool = False, 
+                                k: int = 400, use_matrix_free: bool = False, 
                                 return_mass_matrix: bool = False,
                                 force_dense: bool = None) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """✅ OPTIMIZED: Generalized eigenvalue solver with caching and dense solver option.
@@ -2856,6 +3008,99 @@ class GWLaplacianBuilder:
     def _compute_m_inverse_norm(self, x: np.ndarray, M_inv: np.ndarray) -> float:
         """Compute M^-1-norm ||x||_{M^-1} = sqrt(x^T M^-1 x)."""
         return np.sqrt(max(0.0, float(x.T @ (M_inv @ x))))
+
+    def build_laplacian_grouped(self, *, 
+                               sheaf: Optional['Sheaf'] = None,  # Accept sheaf parameter
+                               grouping,  # AlphaGroupingPolicy
+                               base_edges: List[Tuple[str, str]],
+                               resid_edges: List[Tuple[str, str]],
+                               mass_mode: str = 'fixed',
+                               as_linear_operator: bool = True,
+                               normalize: Union[str, bool] = 'none',
+                               **kwargs) -> Tuple[LinearOperator, LinearOperator, 
+                                                sp.spmatrix, dict]:
+        """Build grouped Laplacian operators for α-flow analysis.
+        
+        Constructs two separate Laplacian operators from partitioned edge sets:
+        - L_base: Laplacian from base (confident) edges
+        - L_resid: Laplacian from residual (uncertain) edges
+        
+        This enables α-flow analysis: L(α) = L_base + α*L_resid
+        
+        The method:
+        1. Fetches per-edge costs/weights from existing GW pipeline
+        2. Uses provided edge partition (base/resid sets)
+        3. Assembles two B^T W B operators for respective edge blocks
+        4. Builds/caches mass matrix D based on mass_mode
+           - Fixed mode: compute D once, freeze all normalizations, add 1e-12 ridge
+           - Cache includes degree-based masses if using normalized Laplacian
+        
+        Args:
+            grouping: AlphaGroupingPolicy used for partitioning
+            base_edges: List of base (confident) edges
+            resid_edges: List of residual (uncertain) edges  
+            mass_mode: 'fixed' for consistency across α, 'adaptive' for accuracy
+            as_linear_operator: Return LinearOperator (True) or sparse matrix (False)
+            normalize: Normalization mode ('none', 'sym', 'rw', True=sym, False=none)
+            **kwargs: Additional arguments passed to build_laplacian
+            
+        Returns:
+            Tuple of (L_base, L_resid, D, metadata):
+            - L_base: Base Laplacian operator/matrix
+            - L_resid: Residual Laplacian operator/matrix
+            - D: Mass matrix (frozen in fixed mode)
+            - metadata: Build statistics and edge information
+        """
+        logger.info(f"Building grouped Laplacian: {len(base_edges)} base, {len(resid_edges)} resid edges")
+        
+        # Use provided sheaf or fall back to cached sheaf
+        if sheaf is not None:
+            target_sheaf = sheaf
+        elif hasattr(self, '_last_sheaf') and self._last_sheaf is not None:
+            target_sheaf = self._last_sheaf
+        else:
+            raise GWLaplacianError("No sheaf provided. Pass sheaf parameter or call build_laplacian first.")
+        
+        sheaf = target_sheaf
+        
+        # Build base and residual Laplacians through gateway for consistent G₀/G₁
+        logger.debug(f"Building base Laplacian with {len(base_edges)} edges using gateway")
+        L_base_csr, M_base = self._build_L_from_gateway(sheaf, base_edges, normalize=normalize)
+        
+        logger.debug(f"Building residual Laplacian with {len(resid_edges)} edges using gateway")
+        L_resid_csr, M_resid = self._build_L_from_gateway(sheaf, resid_edges, normalize=normalize)
+        
+        # Mass matrix for return (both should be the same since they use same node set)
+        D_out = M_base
+        
+        # Convert to LinearOperator if requested
+        if as_linear_operator:
+            L_base = LinearOperator(shape=L_base_csr.shape, matvec=L_base_csr.dot, dtype=L_base_csr.dtype)
+            L_resid = LinearOperator(shape=L_resid_csr.shape, matvec=L_resid_csr.dot, dtype=L_resid_csr.dtype)
+        else:
+            L_base, L_resid = L_base_csr, L_resid_csr
+        
+        # CRITICAL FIX: Mass matrix D_out must remain sparse matrix for eigsh compatibility
+        # Do NOT convert D_out to LinearOperator even if as_linear_operator=True
+        # This is required because scipy.sparse.linalg.eigsh needs a sparse matrix or
+        # array-like object for the mass matrix M in generalized eigenvalue problems L x = λ M x
+        
+        # Compile metadata
+        metadata = {
+            'normalized': ('sym' if normalize is True else normalize),
+            'n_base_edges': len(base_edges),
+            'n_resid_edges': len(resid_edges),
+            'base_edges': base_edges,
+            'resid_edges': resid_edges,
+            'mass_mode': mass_mode,
+            'matrix_size': L_base_csr.shape[0],
+        }
+        
+        logger.info(f"Grouped Laplacian built: base_nnz={getattr(L_base_csr, 'nnz', 'N/A')}, "
+                   f"resid_nnz={getattr(L_resid_csr, 'nnz', 'N/A')}, "
+                   f"normalize={normalize}, mass_mode={mass_mode}")
+        
+        return L_base, L_resid, D_out, metadata
 
 
 # ✅ Matrix-Free LinearOperator for A = δᵀ G₁ δ

@@ -15,9 +15,11 @@ Key Features:
 
 import torch
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union, Callable, Any
+from typing import Dict, List, Optional, Tuple, Union, Callable, Any, Sequence, Literal
 import time
+from dataclasses import dataclass
 from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import LinearOperator
 from ..utils.logging import setup_logger
 from ..utils.exceptions import ComputationError
 from ..sheaf.data_structures import Sheaf
@@ -27,8 +29,136 @@ from ..utils.dtw_similarity import FiltrationDTW
 from .tracker_factory import SubspaceTrackerFactory
 from .h0_persistence import H0PersistenceTracker
 from ..io.config import H0Config, DEFAULT_H0_CONFIG
+from .flows.alpha_flow import AlphaGroupingPolicy, AlphaFlowBuilder
+from .flows.diffusion_flow import DiffusionSpec, DiffusionSummaries, DiffusionFlowAnalyzer
 
 logger = setup_logger(__name__)
+
+
+@dataclass(frozen=True)
+class StaticBuildConfig:
+    """Configuration for flow-based static Laplacian building.
+    
+    This configuration controls how Laplacian operators are constructed
+    for α-flow and t-flow analysis, with emphasis on cross-architecture
+    comparability and numerical stability.
+    
+    Attributes:
+        mass_mode: Mass matrix mode ('fixed' for consistency, 'adaptive' for accuracy)
+        precision: Computation precision ('double' or 'single')
+        normalization: Applied to summaries only, not operators (None, 'trace', 'frobenius')
+        random_state: Random seed for reproducible computations
+    """
+    mass_mode: Literal['fixed', 'adaptive'] = 'fixed'
+    precision: Literal['double', 'single'] = 'double'
+    normalization: Optional[str] = None  # Applied to summaries only, not operators
+    random_state: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class AlphaFlowSpec:
+    """Specification for α-flow analysis.
+    
+    The α-flow method analyzes network structure using baseline/residual
+    Laplacian decomposition: L(α) = L_base + α*L_resid.
+    
+    Attributes:
+        alpha_grid: Sequence of α values for analysis
+        k_small: Number of smallest eigenvalues to compute
+        probes: Number of Hutchinson probes for trace estimation
+        moments: Powers k for computing Tr(L^k) moments
+        grouping: Policy for partitioning edges into base/residual sets
+        sigma: Shift-invert parameter for eigenvalue computation
+        eigen_use_csr: Use explicit CSR matrices for eigenvalue computation (faster shift-invert)
+    """
+    alpha_grid: Sequence[float] = (0.0, 0.1, 0.3, 1.0, 3.0)
+    k_small: int = 16
+    probes: int = 64
+    moments: Sequence[int] = (1, 2, 3, 4, 5, 6)
+    grouping: AlphaGroupingPolicy = AlphaGroupingPolicy()
+    sigma: float = 1e-6
+    eigen_use_csr: bool = True
+
+
+@dataclass(frozen=True)
+class DiffusionFlowSpec:
+    """Specification for t-flow (diffusion) analysis.
+    
+    The t-flow method analyzes multi-scale structure using heat kernel
+    summaries: h(t) = Tr(exp(-t*L))/n over different time scales.
+    
+    Attributes:
+        t_grid: Time points for analysis ('auto' for automatic generation or explicit sequence)
+        k_small: Number of smallest eigenvalues to compute
+        probes: Number of Hutchinson probes for SLQ estimation
+        slq_iters: Number of Lanczos iterations for SLQ computation
+        sigma: Shift-invert parameter for eigenvalue computation
+    """
+    t_grid: Union[Sequence[float], Literal['auto']] = 'auto'
+    k_small: int = 16
+    probes: int = 64
+    slq_iters: int = 30
+    sigma: float = 1e-6
+
+
+@dataclass
+class AlphaFlowPoint:
+    """Results for a single α value in α-flow analysis.
+    
+    Attributes:
+        alpha: The α parameter value
+        eigenvalues: k smallest eigenvalues of L(α)
+        moments: Hutchinson moment estimates Tr(L(α)^k)
+        moment_stds: Standard deviations of moment estimates
+        trace_normalized: Normalized trace Tr(L(α))/n
+        frobenius_normalized: Normalized Frobenius norm ||L(α)||²_F/n²
+        meta: Computation metadata (timing, convergence, etc.)
+    """
+    alpha: float
+    eigenvalues: np.ndarray
+    moments: Dict[int, float]  # {k: Tr(L^k)}
+    moment_stds: Dict[int, float]  # {k: std(Tr(L^k))}
+    trace_normalized: float
+    frobenius_normalized: float
+    meta: Dict[str, Any]
+
+
+@dataclass
+class AlphaFlowResult:
+    """Complete α-flow analysis results.
+    
+    Attributes:
+        points: Results for each α value
+        grouping_meta: Edge partitioning metadata
+        build_meta: Laplacian construction metadata
+        analysis_time: Total analysis time in seconds
+        spec: Original analysis specification
+        config: Build configuration used
+    """
+    points: List[AlphaFlowPoint]
+    grouping_meta: Dict[str, Any]
+    build_meta: Dict[str, Any]
+    analysis_time: float
+    spec: AlphaFlowSpec
+    config: StaticBuildConfig
+
+
+@dataclass
+class DiffusionFlowResult:
+    """Complete t-flow (diffusion) analysis results.
+    
+    Attributes:
+        summaries: Heat trace summaries from diffusion analysis
+        build_meta: Laplacian construction metadata  
+        analysis_time: Total analysis time in seconds
+        spec: Original analysis specification
+        config: Build configuration used
+    """
+    summaries: DiffusionSummaries
+    build_meta: Dict[str, Any]
+    analysis_time: float
+    spec: DiffusionFlowSpec
+    config: StaticBuildConfig
 
 
 class PersistentSpectralAnalyzer:
@@ -1459,6 +1589,329 @@ class PersistentSpectralAnalyzer:
         
         return diagrams
     
+    def analyze_alpha_flow(self, 
+                          sheaf: Sheaf,
+                          spec: AlphaFlowSpec,
+                          config: StaticBuildConfig, 
+                          use_normalized: Union[str, bool] = False) -> AlphaFlowResult:
+        """Perform α-flow analysis on a sheaf.
+        
+        The α-flow method analyzes network structure using baseline/residual
+        Laplacian decomposition: L(α) = L_base + α*L_resid. This provides
+        architecture-invariant comparison by avoiding trivial uniform scaling.
+        
+        Process:
+        1. Build grouped operators (L_base, L_resid, D) with no masking
+        2. Handle degenerate splits with guard rails  
+        3. Freeze D in fixed mode with proper ridge regularization
+        4. For each α: compute eigenvalues, Hutchinson moments, norms
+        5. Apply normalization to summaries only (not operators)
+        
+        Args:
+            sheaf: GW sheaf containing edge costs and restrictions
+            spec: α-flow analysis specification
+            config: Build configuration for Laplacian construction
+            
+        Returns:
+            AlphaFlowResult with complete analysis results and metadata
+            
+        Raises:
+            ComputationError: If analysis fails due to numerical issues
+            ValueError: If sheaf is not suitable for α-flow analysis
+        """
+        start_time = time.time()
+        
+        logger.info(f"Starting α-flow analysis: {len(spec.alpha_grid)} α values, "
+                   f"{spec.k_small} eigenvalues, {spec.probes} probes")
+        
+        try:
+            # Import numerical utilities
+            from .utils_numerical import hutchinson_trace_power, smallest_eigs_generalized
+            
+            # Step 1: Build grouped operators using AlphaFlowBuilder
+            alpha_builder = AlphaFlowBuilder(sheaf, self._get_gw_laplacian_builder(), use_normalized_laplacian=use_normalized)
+            
+            # Configure random seed for reproducible results
+            if config.random_state is not None:
+                np.random.seed(config.random_state)
+                rng = np.random.default_rng(config.random_state)
+            else:
+                rng = np.random.default_rng()
+            
+            # Build the α-flow operators - choose format based on efficiency flag
+            if spec.eigen_use_csr:
+                # Build CSR matrices for efficient eigenvalue computation
+                alpha_build_csr = alpha_builder.get_csr_matrices(
+                    grouping=spec.grouping,
+                    mass_mode=config.mass_mode
+                )
+                # Also need LinearOperator version for Hutchinson moments
+                alpha_build_op = alpha_builder.build(
+                    grouping=spec.grouping,
+                    mass_mode=config.mass_mode,
+                    as_linear_operator=True
+                )
+                logger.info(f"Built α-flow operators (CSR+LinearOperator): {alpha_build_csr.meta['n_base_edges']} base edges, "
+                           f"{alpha_build_csr.meta['n_resid_edges']} residual edges")
+            else:
+                # Traditional LinearOperator approach
+                alpha_build_op = alpha_builder.build(
+                    grouping=spec.grouping,
+                    mass_mode=config.mass_mode,
+                    as_linear_operator=True
+                )
+                alpha_build_csr = None
+                logger.info(f"Built α-flow operators (LinearOperator): {alpha_build_op.meta['n_base_edges']} base edges, "
+                           f"{alpha_build_op.meta['n_resid_edges']} residual edges")
+            
+            # Step 2: Analyze each α value
+            points = []
+            
+            for alpha in spec.alpha_grid:
+                logger.debug(f"Computing α = {alpha}")
+                
+                # Form L(α) for eigenvalue computation (CSR or LinearOperator)
+                if spec.eigen_use_csr:
+                    # Use CSR matrices for more efficient shift-invert
+                    L_alpha_csr = alpha_builder.as_csr_combined(alpha_build_csr, alpha)
+                    L_alpha_eigen = L_alpha_csr
+                    D_eigen = alpha_build_csr.D
+                    logger.debug(f"Using CSR matrix for eigenvalues: nnz={L_alpha_csr.nnz}")
+                else:
+                    # Traditional LinearOperator approach
+                    L_alpha_eigen = alpha_builder.as_operator(alpha_build_op, alpha)
+                    D_eigen = alpha_build_op.D
+                
+                # Form L(α) for Hutchinson moments (always use LinearOperator - efficient for matvec)
+                L_alpha_moments = alpha_builder.as_operator(alpha_build_op, alpha)
+                
+                # Compute k smallest generalized eigenvalues
+                try:
+                    eig_result = smallest_eigs_generalized(
+                        L_alpha_eigen, D_eigen, 
+                        k=spec.k_small, 
+                        sigma=spec.sigma,
+                        random_state=rng,
+                        return_vecs=False
+                    )
+                    
+                    if not eig_result.converged or len(eig_result.eigenvalues) == 0:
+                        logger.warning(f"Eigenvalue computation failed for α={alpha}")
+                        eigenvalues = np.array([])
+                    else:
+                        # Clip negative eigenvalues as per plan
+                        eigenvalues = np.maximum(eig_result.eigenvalues, -1e-12)
+                        
+                        # Log eigenvalue range for monitoring
+                        if len(eigenvalues) > 0:
+                            eig_min = eigenvalues.min()
+                            eig_max = eigenvalues.max()
+                            eig_mean = eigenvalues.mean()
+                            eig_std = eigenvalues.std()
+                            logger.info(f"α={alpha}: Eigenvalue range: [{eig_min:.6e}, {eig_max:.6e}], "
+                                       f"mean={eig_mean:.6e}, std={eig_std:.6e}, count={len(eigenvalues)}")
+                            
+                            # Log warning if eigenvalues seem unusual
+                            if eig_max > 1e6:
+                                logger.warning(f"α={alpha}: Large eigenvalues detected (max={eig_max:.6e})")
+                            if eig_min < -1e-10:
+                                logger.warning(f"α={alpha}: Negative eigenvalues detected (min={eig_min:.6e})")
+                        else:
+                            logger.info(f"α={alpha}: No eigenvalues computed")
+                        
+                except Exception as e:
+                    logger.warning(f"Eigenvalue computation failed for α={alpha}: {e}")
+                    eigenvalues = np.array([])
+                    logger.info(f"α={alpha}: No eigenvalues computed")
+                
+                # Compute Hutchinson moments Tr(L^k) using LinearOperator (efficient for matvec)
+                moments = {}
+                moment_stds = {}
+                
+                for k in spec.moments:
+                    try:
+                        trace_est, trace_std = hutchinson_trace_power(
+                            L_alpha_moments, power=k, probes=spec.probes, rng=rng
+                        )
+                        moments[k] = trace_est
+                        moment_stds[k] = trace_std
+                    except Exception as e:
+                        logger.warning(f"Moment computation failed for α={alpha}, k={k}: {e}")
+                        moments[k] = np.nan
+                        moment_stds[k] = np.nan
+                
+                # Compute trace and Frobenius norm (k=1 and k=2 moments)
+                n = L_alpha_moments.shape[0]
+                trace_normalized = moments.get(1, np.nan) / n if n > 0 else np.nan
+                frobenius_normalized = moments.get(2, np.nan) / (n * n) if n > 0 else np.nan
+                
+                # Apply additional normalization if specified
+                if config.normalization == 'trace' and not np.isnan(trace_normalized):
+                    for k in moments:
+                        if not np.isnan(moments[k]):
+                            moments[k] /= trace_normalized
+                
+                # Compile point results
+                point_meta = {
+                    'eigenvalue_converged': eig_result.converged if 'eig_result' in locals() else False,
+                    'eigenvalue_iterations': eig_result.num_iterations if 'eig_result' in locals() else 0,
+                    'moment_computation_success': {k: not np.isnan(moments[k]) for k in moments},
+                    'alpha': alpha
+                }
+                
+                point = AlphaFlowPoint(
+                    alpha=alpha,
+                    eigenvalues=eigenvalues,
+                    moments=moments,
+                    moment_stds=moment_stds,
+                    trace_normalized=trace_normalized,
+                    frobenius_normalized=frobenius_normalized,
+                    meta=point_meta
+                )
+                points.append(point)
+                
+                if len(eigenvalues) > 0:
+                    logger.debug(f"α={alpha}: {len(eigenvalues)} eigenvalues [min={eigenvalues.min():.3e}, max={eigenvalues.max():.3e}], "
+                               f"{sum(1 for v in moments.values() if not np.isnan(v))}/{len(moments)} moments")
+                else:
+                    logger.debug(f"α={alpha}: 0 eigenvalues, "
+                               f"{sum(1 for v in moments.values() if not np.isnan(v))}/{len(moments)} moments")
+            
+            # Step 3: Compile final results
+            analysis_time = time.time() - start_time
+            
+            # Use alpha_build_op for metadata (always exists)
+            active_build = alpha_build_op
+            
+            result = AlphaFlowResult(
+                points=points,
+                grouping_meta=active_build.meta,
+                build_meta={
+                    'matrix_size': active_build.L_base.shape[0],
+                    'eigen_use_csr': spec.eigen_use_csr,
+                    'mass_mode': config.mass_mode,
+                    'precision': config.precision,
+                    'normalization': config.normalization
+                },
+                analysis_time=analysis_time,
+                spec=spec,
+                config=config
+            )
+            
+            # Log overall eigenvalue statistics
+            all_eigenvalues = []
+            for point in points:
+                if point.eigenvalues.size > 0:
+                    all_eigenvalues.extend(point.eigenvalues.tolist())
+            
+            if all_eigenvalues:
+                all_eigs = np.array(all_eigenvalues)
+                logger.info(f"Overall eigenvalue statistics across all α values:")
+                logger.info(f"  Range: [{all_eigs.min():.6e}, {all_eigs.max():.6e}]")
+                logger.info(f"  Mean: {all_eigs.mean():.6e}, Std: {all_eigs.std():.6e}")
+                logger.info(f"  Total eigenvalues computed: {len(all_eigenvalues)}")
+            
+            logger.info(f"α-flow analysis completed: {analysis_time:.3f}s, "
+                       f"{len(points)} α values, matrix size {alpha_build_op.L_base.shape[0]}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"α-flow analysis failed: {e}")
+            raise ComputationError(f"α-flow analysis failed: {e}") from e
+    
+    def analyze_diffusion_flow(self,
+                              sheaf: Sheaf,
+                              spec: DiffusionFlowSpec, 
+                              config: StaticBuildConfig) -> DiffusionFlowResult:
+        """Perform t-flow (diffusion) analysis on a sheaf.
+        
+        The t-flow method uses heat kernel summaries to probe multi-scale
+        structure: h(t) = Tr(exp(-t*L))/n over different time scales.
+        
+        Process:
+        1. Build single L (all edges) and D with no masking
+        2. Freeze D in fixed mode with ridge regularization  
+        3. Compute k smallest eigenvalues once (cached for efficiency)
+        4. Auto-generate t-grid if needed using λ_max estimation
+        5. For each t: estimate heat trace using SLQ with variance tracking
+        
+        Args:
+            sheaf: GW sheaf for analysis
+            spec: Diffusion flow analysis specification
+            config: Build configuration for Laplacian construction
+            
+        Returns:
+            DiffusionFlowResult with heat trace summaries and metadata
+            
+        Raises:
+            ComputationError: If analysis fails due to numerical issues
+            ValueError: If sheaf is not suitable for t-flow analysis
+        """
+        start_time = time.time()
+        
+        logger.info(f"Starting t-flow analysis: {spec.probes} probes, "
+                   f"{spec.slq_iters} SLQ iterations")
+        
+        try:
+            # Step 1: Initialize diffusion analyzer
+            diffusion_analyzer = DiffusionFlowAnalyzer(sheaf, self._get_gw_laplacian_builder())
+            
+            # Step 2: Create DiffusionSpec for the analyzer
+            diffusion_spec = DiffusionSpec(
+                t_grid=spec.t_grid,
+                k_small=spec.k_small,
+                probes=spec.probes,
+                slq_iters=spec.slq_iters
+            )
+            
+            # Step 3: Perform the analysis
+            summaries = diffusion_analyzer.analyze(diffusion_spec, config.mass_mode)
+            
+            # Step 4: Apply normalization if specified
+            if config.normalization == 'trace' and len(summaries.heat_trace) > 0:
+                # Normalize by the first (largest) heat trace value
+                max_trace = np.nanmax(summaries.heat_trace)
+                if max_trace > 0:
+                    summaries.heat_trace = summaries.heat_trace / max_trace
+            
+            # Step 5: Compile final results
+            analysis_time = time.time() - start_time
+            
+            result = DiffusionFlowResult(
+                summaries=summaries,
+                build_meta={
+                    'matrix_size': summaries.meta.get('matrix_size', 0),
+                    'mass_mode': config.mass_mode,
+                    'precision': config.precision,
+                    'normalization': config.normalization,
+                    **summaries.meta
+                },
+                analysis_time=analysis_time,
+                spec=spec,
+                config=config
+            )
+            
+            logger.info(f"t-flow analysis completed: {analysis_time:.3f}s, "
+                       f"{len(summaries.heat_trace)} time points, "
+                       f"monotonic: {summaries.meta.get('is_monotonic', False)}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"t-flow analysis failed: {e}")
+            raise ComputationError(f"t-flow analysis failed: {e}") from e
+    
+    def _get_gw_laplacian_builder(self):
+        """Get or create GWLaplacianBuilder instance."""
+        # Import here to avoid circular imports
+        from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+        
+        if not hasattr(self, '_gw_laplacian_builder'):
+            self._gw_laplacian_builder = GWLaplacianBuilder()
+        
+        return self._gw_laplacian_builder
+    
     def analyze_multiple_sheaves(self,
                                 sheaves: List[Sheaf],
                                 **analysis_kwargs) -> List[Dict]:
@@ -1915,12 +2368,21 @@ class PersistentSpectralAnalyzer:
         
         logger.info("Using unified Laplacian construction for consistent eigenvalue computation")
         
-        # Create unified Laplacian computer
+        # Determine if we need GW support based on sheaf type
+        is_gw_sheaf = sheaf.is_gw_sheaf()
+        use_normalized = False
+        if is_gw_sheaf:
+            gw_config = sheaf.metadata.get('gw_config', {})
+            if isinstance(gw_config, dict):
+                use_normalized = gw_config.get('use_normalized_laplacian', False)
+        
+        # Create unified Laplacian computer with appropriate configuration
         unified_computer = UnifiedStaticLaplacian(
             eigenvalue_method='auto',
-            max_eigenvalues=100,
+            max_eigenvalues=1000,
             enable_gpu=False,
-            enable_caching=True
+            enable_caching=True,
+            use_generalized_normalization=use_normalized  # Enable GW support when needed
         )
         
         # Build base Laplacian once (same as standard persistence)

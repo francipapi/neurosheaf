@@ -1,0 +1,101 @@
+2025-08-19 13:04:12,349 - __main__ - INFO - Discovered 72 model files
+2025-08-19 13:04:12,350 - __main__ - INFO - After resume filter: 20 models to process
+2025-08-19 13:04:12,350 - __main__ - INFO - Available memory: 32.0 GB
+2025-08-19 13:04:12,350 - __main__ - INFO - Starting parallel processing with 10 workers
+2025-08-19 13:04:15,524 - __main__ - INFO - Processing complete!
+2025-08-19 13:04:15,524 - __main__ - INFO - Total time: 3.2 seconds
+2025-08-19 13:04:15,524 - __main__ - INFO - Successful: 0
+2025-08-19 13:04:15,524 - __main__ - INFO - Failed: 0
+2025-08-19 13:04:15,524 - __main__ - INFO - Results saved to: eigenvalueData
+2025-08-19 13:11:25,765 - __main__ - INFO - Discovered 3 model files
+2025-08-19 13:11:43,055 - __main__ - INFO - Discovered 1 model files
+2025-08-19 13:11:43,055 - __main__ - INFO - Available memory: 32.0 GB
+2025-08-19 13:11:43,055 - __main__ - INFO - Starting parallel processing with 6 workers
+2025-08-19 13:12:01,007 - __main__ - INFO - Discovered 80 model files
+2025-08-19 13:12:01,007 - __main__ - INFO - Available memory: 32.0 GB
+2025-08-19 13:12:01,007 - __main__ - INFO - Starting parallel processing with 10 workers
+2025-08-19 13:12:28,273 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v08_eigenvalues.npz
+2025-08-19 13:12:28,424 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v04_eigenvalues.npz
+2025-08-19 13:12:28,814 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v09_eigenvalues.npz
+2025-08-19 13:12:29,670 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v05_eigenvalues.npz
+2025-08-19 13:12:30,010 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v03_eigenvalues.npz
+2025-08-19 13:12:30,012 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v02_eigenvalues.npz
+2025-08-19 13:12:30,415 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v00_eigenvalues.npz
+2025-08-19 13:12:31,008 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v06_eigenvalues.npz
+2025-08-19 13:12:32,015 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v07_eigenvalues.npz
+2025-08-19 13:12:33,265 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v01_eigenvalues.npz
+2025-08-19 13:12:51,569 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v11_eigenvalues.npz
+2025-08-19 13:12:52,082 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v12_eigenvalues.npz
+2025-08-19 13:12:52,280 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v13_eigenvalues.npz
+2025-08-19 13:12:53,040 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v16_eigenvalues.npz
+2025-08-19 13:12:53,736 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v15_eigenvalues.npz
+2025-08-19 13:12:54,133 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v14_eigenvalues.npz
+2025-08-19 13:12:54,735 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v10_eigenvalues.npz
+2025-08-19 13:12:54,898 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v17_eigenvalues.npz
+2025-08-19 13:12:55,221 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v18_eigenvalues.npz
+2025-08-19 13:13:03,503 - __main__ - INFO - Saved results to eigenvalueData/custom_random_v19_eigenvalues.npz
+2025-08-19 13:13:13,856 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v03_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:14,826 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v02_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:15,413 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v05_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:15,416 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v06_acc0.9997_ep20_eigenvalues.npz
+2025-08-19 13:13:16,316 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v01_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:16,547 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v07_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:16,679 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v04_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:18,721 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v09_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:20,906 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v08_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:28,364 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v10_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:36,367 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v11_acc0.9999_ep20_eigenvalues.npz
+2025-08-19 13:13:37,367 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v12_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:37,816 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v17_acc0.9993_ep20_eigenvalues.npz
+2025-08-19 13:13:38,459 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v13_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:38,705 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v14_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:38,790 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v15_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:38,875 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v16_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:40,786 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v18_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:48,701 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v19_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:13:57,497 - __main__ - INFO - Saved results to eigenvalueData/custom_trained_v20_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:15:47,630 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v00_eigenvalues.npz
+2025-08-19 13:15:50,958 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v02_eigenvalues.npz
+2025-08-19 13:15:53,038 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v07_eigenvalues.npz
+2025-08-19 13:15:53,096 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v06_eigenvalues.npz
+2025-08-19 13:15:53,207 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v03_eigenvalues.npz
+2025-08-19 13:15:53,872 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v01_eigenvalues.npz
+2025-08-19 13:15:58,949 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v05_eigenvalues.npz
+2025-08-19 13:15:59,520 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v04_eigenvalues.npz
+2025-08-19 13:16:00,688 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v08_eigenvalues.npz
+2025-08-19 13:16:09,345 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v09_eigenvalues.npz
+2025-08-19 13:17:50,981 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v10_eigenvalues.npz
+2025-08-19 13:17:58,184 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v15_eigenvalues.npz
+2025-08-19 13:17:59,543 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v17_eigenvalues.npz
+2025-08-19 13:18:00,212 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v13_eigenvalues.npz
+2025-08-19 13:18:00,720 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v11_eigenvalues.npz
+2025-08-19 13:18:01,848 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v14_eigenvalues.npz
+2025-08-19 13:18:04,627 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v16_eigenvalues.npz
+2025-08-19 13:18:05,459 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v18_eigenvalues.npz
+2025-08-19 13:18:06,278 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v12_eigenvalues.npz
+2025-08-19 13:18:08,973 - __main__ - INFO - Saved results to eigenvalueData/mlp_random_v19_eigenvalues.npz
+2025-08-19 13:19:59,849 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v01_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:03,912 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v04_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:05,534 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v06_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:06,047 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v05_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:06,315 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v03_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:08,154 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v02_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:10,069 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v07_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:10,622 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v08_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:12,782 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v10_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:20:13,278 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v09_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:04,934 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v11_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:08,693 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v12_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:08,823 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v14_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:09,308 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v13_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:09,723 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v16_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:10,171 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v17_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:10,371 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v15_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:10,441 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v18_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:10,856 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v19_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:10,972 - __main__ - INFO - Saved results to eigenvalueData/mlp_trained_v20_acc1.0000_ep20_eigenvalues.npz
+2025-08-19 13:22:11,060 - __main__ - INFO - Processing complete!
+2025-08-19 13:22:11,060 - __main__ - INFO - Total time: 610.1 seconds
+2025-08-19 13:22:11,060 - __main__ - INFO - Successful: 80
+2025-08-19 13:22:11,060 - __main__ - INFO - Failed: 0
+2025-08-19 13:22:11,060 - __main__ - INFO - Results saved to: eigenvalueData

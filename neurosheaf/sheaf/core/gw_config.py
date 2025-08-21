@@ -37,7 +37,7 @@ class GWConfig:
     """
     
     # Core GW optimization parameters
-    epsilon: float = 0.1                     # Entropic regularization strength
+    epsilon: float = 0.05                     # Entropic regularization strength
     max_iter: int = 1000                     # Maximum GW iterations
     tolerance: float = 1e-9                  # Convergence tolerance
     
@@ -55,7 +55,7 @@ class GWConfig:
     
     # Measure and inner product options
     uniform_measures: bool = True            # Use uniform p_i vs importance sampling
-    weighted_inner_product: bool = False     # Use p_i-weighted L2 inner products
+    weighted_inner_product: bool = True     # Use p_i-weighted L2 inner products
     
     # Numerical stability  
     cost_matrix_eps: float = 1e-12           # Numerical threshold for cost matrices
@@ -93,7 +93,7 @@ class GWConfig:
     auto_correct_restrictions: bool = True     # Automatically correct small violations
     
     # Normalized Laplacian option
-    use_normalized_laplacian: bool = False      # Use normalized Hodge Laplacian (L x = λ M x) vs standard Laplacian
+    use_normalized_laplacian: bool = True      # Use normalized Hodge Laplacian (L x = λ M x) vs standard Laplacian
     
     def __post_init__(self):
         """Automatically validate configuration after initialization."""

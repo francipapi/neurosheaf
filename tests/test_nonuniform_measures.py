@@ -60,7 +60,7 @@ class TestVarianceBasedMeasures:
         
         # Check basic properties
         assert measures.shape == (n_features,)
-        assert torch.allclose(measures.sum(), torch.tensor(1.0), atol=1e-6)
+        assert torch.allclose(measures.sum(), torch.tensor(1.0, dtype=measures.dtype), atol=1e-6)
         assert torch.all(measures > 0), "All measures should be positive"
         
         # Check ordering: high variance > medium variance > low variance
@@ -105,20 +105,20 @@ class TestVarianceBasedMeasures:
         activations_single = torch.randn(10, 1)
         measures_single = manager._compute_variance_based_measures(activations_single)
         assert measures_single.shape == (1,)
-        assert torch.allclose(measures_single, torch.tensor([1.0]), atol=1e-6)
+        assert torch.allclose(measures_single, torch.tensor([1.0], dtype=measures_single.dtype), atol=1e-6)
         
         # Test all zero activations
         activations_zeros = torch.zeros(5, 3)
         measures_zeros = manager._compute_variance_based_measures(activations_zeros)
         # All should have equal weight (all just eps)
-        expected = torch.ones(3) / 3.0
+        expected = torch.ones(3, dtype=measures_zeros.dtype) / 3.0
         assert torch.allclose(measures_zeros, expected, atol=1e-6)
         
         # Test identical units (zero relative variance)
         activations_identical = torch.ones(8, 4) * torch.randn(8, 1)  # All units identical
         measures_identical = manager._compute_variance_based_measures(activations_identical)
         # All should have equal weight
-        expected = torch.ones(4) / 4.0
+        expected = torch.ones(4, dtype=measures_identical.dtype) / 4.0
         assert torch.allclose(measures_identical, expected, atol=1e-5)
     
     def test_variance_measures_validation(self):
@@ -135,11 +135,37 @@ class TestVarianceBasedMeasures:
             manager._compute_variance_based_measures(activations, eps=-1e-6)
         
         # Test invalid activation tensor dimensions
-        with pytest.raises(ValueError, match="Expected 2D activation tensor"):
+        with pytest.raises(ValueError, match="Expected activation tensor with at least 2 dimensions"):
             manager._compute_variance_based_measures(torch.randn(5))  # 1D
         
-        with pytest.raises(ValueError, match="Expected 2D activation tensor"):
-            manager._compute_variance_based_measures(torch.randn(2, 3, 4))  # 3D
+        # Test that 3D tensors now work (should be reshaped automatically)
+        activation_3d = torch.randn(2, 3, 4)
+        measures_3d = manager._compute_variance_based_measures(activation_3d)
+        assert measures_3d.shape == (12,)  # 3*4 features after flattening
+        assert torch.allclose(measures_3d.sum(), torch.tensor(1.0, dtype=measures_3d.dtype), atol=1e-6)
+    
+    def test_3d_tensor_handling(self):
+        """Test that 3D tensors like [1000, 32, 1] are handled correctly."""
+        config = GWConfig(uniform_measures=False, measure_eps=1e-6)
+        manager = GWRestrictionManager(config=config)
+        
+        # Test the exact case from the error: [1000, 32, 1]
+        activation_3d = torch.randn(1000, 32, 1)
+        measures = manager._compute_variance_based_measures(activation_3d)
+        
+        # Should be flattened to 32 features (32*1 = 32)
+        assert measures.shape == (32,)
+        assert torch.allclose(measures.sum(), torch.tensor(1.0, dtype=measures.dtype), atol=1e-6)
+        assert torch.all(measures > 0), "All measures should be positive"
+        
+        # Test another 3D case
+        activation_3d_multi = torch.randn(100, 16, 4)
+        measures_multi = manager._compute_variance_based_measures(activation_3d_multi)
+        
+        # Should be flattened to 64 features (16*4 = 64) 
+        assert measures_multi.shape == (64,)
+        assert torch.allclose(measures_multi.sum(), torch.tensor(1.0, dtype=measures_multi.dtype), atol=1e-6)
+        assert torch.all(measures_multi > 0), "All measures should be positive"
     
     def test_config_measure_eps_validation(self):
         """Test that config validation catches invalid measure_eps."""
@@ -340,7 +366,7 @@ class TestMeasureComputationPerformance:
         
         assert elapsed < 0.1, f"Variance computation took too long: {elapsed:.3f}s"
         assert measures.shape == (n_features,)
-        assert torch.allclose(measures.sum(), torch.tensor(1.0), atol=1e-6)
+        assert torch.allclose(measures.sum(), torch.tensor(1.0, dtype=measures.dtype), atol=1e-6)
     
     def test_measure_numerical_stability(self):
         """Test numerical stability of measure computation."""
@@ -352,7 +378,7 @@ class TestMeasureComputationPerformance:
         measures_small = manager._compute_variance_based_measures(small_activations)
         
         # Should still be valid probability distribution
-        assert torch.allclose(measures_small.sum(), torch.tensor(1.0), atol=1e-6)
+        assert torch.allclose(measures_small.sum(), torch.tensor(1.0, dtype=measures_small.dtype), atol=1e-6)
         assert torch.all(measures_small > 0)
         assert torch.all(torch.isfinite(measures_small))
         
@@ -361,6 +387,6 @@ class TestMeasureComputationPerformance:
         measures_large = manager._compute_variance_based_measures(large_activations)
         
         # Should still be valid probability distribution
-        assert torch.allclose(measures_large.sum(), torch.tensor(1.0), atol=1e-6)
+        assert torch.allclose(measures_large.sum(), torch.tensor(1.0, dtype=measures_large.dtype), atol=1e-6)
         assert torch.all(measures_large > 0)
         assert torch.all(torch.isfinite(measures_large))

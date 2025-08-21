@@ -398,7 +398,7 @@ class GromovWassersteinComputer:
             p_target = p_target.to(dtype=target_dtype)
         
         if not self.config.uniform_measures:
-            logger.warning("Non-uniform measures requested but not fully implemented")
+            logger.debug("Using non-uniform measures (variance-based importance sampling)")
         
         # Compute adaptive epsilon if enabled
         epsilon_adaptive = self.compute_adaptive_epsilon(n_source, n_target)

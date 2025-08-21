@@ -25,7 +25,7 @@ import numpy as np
 import logging
 from typing import Dict, List, Optional, Tuple, Union, Callable
 from scipy.sparse import csr_matrix, coo_matrix
-from scipy.sparse.linalg import lobpcg, eigsh
+from scipy.sparse.linalg import lobpcg, eigsh, LinearOperator
 import time
 from dataclasses import dataclass
 
@@ -107,7 +107,7 @@ class UnifiedStaticLaplacian:
     def __init__(self,
                  laplacian_builder: Optional[SheafLaplacianBuilder] = None,
                  eigenvalue_method: str = 'auto',
-                 max_eigenvalues: int = 100,
+                 max_eigenvalues: int = 200,
                  enable_gpu: bool = True,
                  enable_caching: bool = False,
                  validate_properties: bool = False,
@@ -161,9 +161,14 @@ class UnifiedStaticLaplacian:
                 from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
                 self.gw_builder = GWLaplacianBuilder(
                     validate_properties=validate_properties,
-                    force_dense_solver=force_dense_gw_solver
+                    force_dense_solver=force_dense_gw_solver,
+                    use_normalized_laplacian=True  # This is key for normalized Hodge Laplacian
                 )
                 logger.info(f"✅ Generalized normalization enabled with GW builder (force_dense={force_dense_gw_solver})")
+                logger.info("Initial GW Builder Configuration:")
+                logger.info(f"  - validate_properties: {validate_properties}")
+                logger.info(f"  - force_dense_solver: {force_dense_gw_solver}")
+                logger.info(f"  - use_normalized_laplacian: True")
             except ImportError as e:
                 logger.error(f"Failed to import GWLaplacianBuilder: {e}")
                 self.use_generalized_normalization = False
@@ -362,6 +367,9 @@ class UnifiedStaticLaplacian:
                         validate_properties=self.validate_properties,
                         use_normalized_laplacian=use_normalized
                     )
+                    logger.info("Created new GW Builder with configuration:")
+                    logger.info(f"  - validate_properties: {self.validate_properties}")
+                    logger.info(f"  - use_normalized_laplacian: {use_normalized}")
                 except ImportError as e:
                     logger.error(f"Failed to import GWLaplacianBuilder: {e}")
                     self.use_generalized_normalization = False
@@ -372,7 +380,36 @@ class UnifiedStaticLaplacian:
         
         if not self.enable_caching or self._cached_laplacian is None:
             logger.info("Building static Laplacian")
-            self._cached_laplacian, self._cached_metadata = self.laplacian_builder.build(sheaf)
+            
+            # Use GW builder if appropriate for GW sheaves with normalization
+            if self.use_generalized_normalization and self.gw_builder is not None and sheaf.is_gw_sheaf():
+                logger.info(f"Using GW builder for normalized Laplacian: {self.gw_builder}")
+                # Log GW builder configuration
+                logger.info("GW Builder Configuration:")
+                logger.info(f"  - validate_properties: {self.gw_builder.validate_properties}")
+                logger.info(f"  - sparsity_threshold: {self.gw_builder.sparsity_threshold}")
+                logger.info(f"  - use_weighted_inner_products: {self.gw_builder.use_weighted_inner_products}")
+                logger.info(f"  - enable_caching: {self.gw_builder.enable_caching}")
+                logger.info(f"  - weight_transform: {self.gw_builder.weight_transform.value if hasattr(self.gw_builder.weight_transform, 'value') else self.gw_builder.weight_transform}")
+                logger.info(f"  - transform_beta: {self.gw_builder.transform_beta}")
+                logger.info(f"  - use_normalized_laplacian: {self.gw_builder.use_normalized_laplacian}")
+                logger.info(f"  - force_dense_solver: {self.gw_builder.force_dense_solver}")
+                logger.info(f"  - torch_dtype: {self.gw_builder.torch_dtype}")
+                logger.info(f"  - numpy_dtype: {self.gw_builder.numpy_dtype}")
+                # GW builder's build_laplacian returns just the matrix
+                self._cached_laplacian = self.gw_builder.build_laplacian(sheaf, sparse=True)
+                # Get metadata from GW builder
+                from ..sheaf.assembly.gw_laplacian import GWWeightTransform
+                edge_weights = self.gw_builder.extract_edge_weights(
+                    sheaf, 
+                    transform_method=self.gw_builder.weight_transform,
+                    transform_beta=self.gw_builder.transform_beta
+                )
+                self._cached_metadata = self.gw_builder._initialize_gw_metadata(sheaf, edge_weights)
+            else:
+                logger.info(f"Using standard builder: {self.laplacian_builder}")
+                self._cached_laplacian, self._cached_metadata = self.laplacian_builder.build(sheaf)
+            
             logger.info(f"Static Laplacian built: {self._cached_laplacian.shape}, "
                        f"{self._cached_laplacian.nnz:,} non-zeros")
         else:
@@ -1270,6 +1307,133 @@ class UnifiedStaticLaplacian:
             
         except Exception as e:
             return {'validation_error': str(e)}
+    
+    def build_no_mask_single(self, *, sheaf: Sheaf, mass_mode: str = 'fixed') -> Tuple[
+        LinearOperator, Union[csr_matrix, LinearOperator], Dict]:
+        """Build single L (all edges) and mass D with no filtration/masking.
+        
+        This method builds a complete Laplacian with all edges active,
+        specifically designed for t-flow analysis that requires the full
+        network structure without any threshold-based edge masking.
+        
+        Args:
+            sheaf: GW sheaf containing restrictions and edge data
+            mass_mode: 'fixed' for cross-architecture consistency, 'adaptive' for accuracy
+            
+        Returns:
+            Tuple of (L, D, metadata) where:
+            - L: Complete Laplacian LinearOperator with all edges
+            - D: Mass matrix (frozen in fixed mode, adaptive otherwise)
+            - metadata: Build information and diagnostics
+            
+        Raises:
+            ComputationError: If Laplacian construction fails
+        """
+        logger.info(f"Building no-mask single Laplacian: mass_mode={mass_mode}")
+        
+        try:
+            # Import GW builder for proper edge handling
+            from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+            
+            gw_builder = GWLaplacianBuilder()
+            
+            # Build complete Laplacian using all edges (no masking)
+            result = gw_builder.build_laplacian(
+                sheaf=sheaf,
+                as_linear_operator=True,
+                **({'mass_mode': mass_mode} if hasattr(gw_builder, 'mass_mode') else {})
+            )
+            
+            L = result['laplacian']
+            D = result.get('mass_matrix')
+            
+            # Handle missing mass matrix
+            if D is None:
+                n = L.shape[0]
+                D = LinearOperator(shape=(n, n), matvec=lambda x: x, dtype=L.dtype)
+                logger.warning("No mass matrix found, using identity")
+            
+            # Add ridge regularization for fixed mode
+            if mass_mode == 'fixed':
+                ridge_eps = 1e-12
+                if hasattr(D, 'toarray'):  # sparse matrix
+                    D_ridge = D + ridge_eps * csr_matrix.identity(D.shape[0], dtype=D.dtype)
+                else:  # LinearOperator
+                    original_matvec = D.matvec
+                    D_ridge = LinearOperator(
+                        shape=D.shape,
+                        matvec=lambda x: original_matvec(x) + ridge_eps * x,
+                        dtype=D.dtype
+                    )
+                D = D_ridge
+                logger.debug(f"Added ridge regularization ε={ridge_eps} to mass matrix")
+            
+            metadata = {
+                'n_edges': len(sheaf.restrictions),
+                'matrix_size': L.shape[0],
+                'mass_mode': mass_mode,
+                'no_masking': True,
+                'ridge_regularization': ridge_eps if mass_mode == 'fixed' else 0.0,
+                'build_method': 'no_mask_single'
+            }
+            
+            logger.info(f"Built no-mask single Laplacian: {L.shape[0]}×{L.shape[0]}, "
+                       f"{len(sheaf.restrictions)} edges")
+            
+            return L, D, metadata
+            
+        except Exception as e:
+            logger.error(f"Failed to build no-mask single Laplacian: {e}")
+            raise ComputationError(f"No-mask single Laplacian construction failed: {e}") from e
+    
+    def build_no_mask_grouped(self, *, 
+                             grouping: 'AlphaGroupingPolicy',
+                             sheaf: Sheaf,
+                             mass_mode: str = 'fixed') -> 'AlphaFlowBuild':
+        """Build grouped Laplacian operators for α-flow via AlphaFlowBuilder.
+        
+        This method handles the construction of base and residual Laplacian
+        operators for α-flow analysis, using the AlphaFlowBuilder infrastructure
+        to ensure proper edge partitioning and operator construction.
+        
+        Args:
+            grouping: Policy for partitioning edges into base/residual sets
+            sheaf: GW sheaf containing edge costs and restrictions
+            mass_mode: Mass matrix mode ('fixed' or 'adaptive')
+            
+        Returns:
+            AlphaFlowBuild containing L_base, L_resid, D, and metadata
+            
+        Raises:
+            ComputationError: If grouped Laplacian construction fails
+        """
+        logger.info(f"Building no-mask grouped Laplacian: {grouping.kind} partitioning, "
+                   f"mass_mode={mass_mode}")
+        
+        try:
+            # Import required classes
+            from .flows.alpha_flow import AlphaFlowBuilder
+            from ..sheaf.assembly.gw_laplacian import GWLaplacianBuilder
+            
+            # Create builders
+            gw_builder = GWLaplacianBuilder()
+            alpha_builder = AlphaFlowBuilder(sheaf, gw_builder)
+            
+            # Build the α-flow operators
+            alpha_build = alpha_builder.build(
+                grouping=grouping,
+                mass_mode=mass_mode,
+                as_linear_operator=True
+            )
+            
+            logger.info(f"Built no-mask grouped Laplacian: {alpha_build.meta['n_base_edges']} base, "
+                       f"{alpha_build.meta['n_resid_edges']} residual edges")
+            
+            return alpha_build
+            
+        except Exception as e:
+            logger.error(f"Failed to build no-mask grouped Laplacian: {e}")
+            raise ComputationError(f"No-mask grouped Laplacian construction failed: {e}") from e
 
 
 def create_unified_static_laplacian(sheaf: Sheaf, **kwargs) -> UnifiedStaticLaplacian:

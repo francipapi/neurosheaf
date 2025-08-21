@@ -1,5 +1,8 @@
 import torch.nn as nn 
 import torch
+import torch.utils.data
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -10,7 +13,8 @@ import time
 # Core imports
 from neurosheaf.sheaf.core.gw_config import GWConfig
 from neurosheaf.sheaf.assembly.builder import SheafBuilder
-from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
+from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer, AlphaFlowSpec, StaticBuildConfig
+from neurosheaf.spectral.flows.alpha_flow import AlphaGroupingPolicy
 from neurosheaf.utils import load_model
 from neurosheaf.api import NeurosheafAnalyzer
 from neurosheaf.visualization import EnhancedVisualizationFactory
@@ -185,20 +189,51 @@ class CustomModel(nn.Module):
         x = self.layers[15](self.layers[14](x))  # [batch_size, 1]
         
         return x
-    
+
+class MLP4x256(nn.Module):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 64, num_classes: int = 10):
+        super().__init__()
+        dims = [784] + [hidden_dim] * num_layers
+        layers = []
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.LayerNorm(dims[i + 1]))
+            layers.append(nn.GELU())
+        self.backbone = nn.Sequential(*layers)
+        self.head = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        x = self.backbone(x)
+        return self.head(x)
 
 print("=== Loading Models ===")
-custom_path = "models/torch_custom_acc_1.0000_epoch_200.pth"
-mlp_path = "models/torch_mlp_acc_1.0000_epoch_200.pth"
-mlp_path1 = "models/torch_mlp_acc_0.9857_epoch_100.pth"
-rand_custom_path = "models/random_custom_net_000_default_seed_42.pth"
-rand_mlp_path = "models/random_mlp_net_000_default_seed_42.pth"
+custom_path = "models/custom_trained_acc100_ep200.pth"
+mlp_path = "models/mlp_trained_acc100_ep200.pth"
+mlp_path1 = "models/mlp_trained_acc98_ep100.pth"
+rand_custom_path = "models/custom_random_seed42.pth"
+rand_mlp_path = "models/mlp_random_seed42.pth"
+mlp4 = "models/mlp4layer_mnist_seed42.pth"
+mlp4_rand = "models/mnist_mlp_random_001.pth"
 
-model = load_model(MLPModel, mlp_path1)
+model = load_model(MLP4x256, mlp4)
 
-batch_size = 200
-data = 12*torch.randn(batch_size, 3) 
-print(f"Generated data shape: {data.shape}")
+# Load actual MNIST data
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Lambda(lambda x: x.view(-1))  # Flatten 28x28 to 784
+])
+
+print("Loading MNIST dataset...")
+mnist_test = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+
+# Get first batch_size test samples
+batch_size = 100
+test_loader = torch.utils.data.DataLoader(mnist_test, batch_size=batch_size, shuffle=False)
+data, labels = next(iter(test_loader))
+#data = 10 * torch.randn(self.batch_size, 3)
+print(f"Loaded MNIST data shape: {data.shape}")
+print(f"Labels for first 10 samples: {labels[:10].tolist()}")
 
 print("\n=== Building Sheaf Using High-Level API ===")
 analyzer = NeurosheafAnalyzer(device='cpu')
@@ -207,8 +242,8 @@ print("\nRunning analysis WITH layer filtering (exclude final single-output laye
 analysis = analyzer.analyze(
     model, data, 
     method='gromov_wasserstein',
-    use_normalized_laplacian = True,
-    exclude_final_single_output=True  # NEW: Enable layer filtering to reduce degeneracy
+    use_normalized_laplacian = False,
+    exclude_final_single_output=False  # NEW: Enable layer filtering to reduce degeneracy
 )
 sheaf = analysis['sheaf']
 
@@ -221,7 +256,31 @@ spectral_analyzer = PersistentSpectralAnalyzer(
     default_n_steps=30,
     default_filtration_type='threshold'
 )
+'''
+# Create α-flow specification with default parameters
+spec = AlphaFlowSpec(
+    alpha_grid=(0.0, 0.1, 0.3, 1.0, 3.0),  # α values to analyze
+    k_small=50,  # Number of smallest eigenvalues
+    probes=256,  # Hutchinson probes for trace estimation
+    moments=(1, 2, 3, 4, 5, 6),  # Include k=1 for trace computation
+    grouping=AlphaGroupingPolicy(kind='quantile', param=0.5)  # Edge partitioning
+)
 
+# Create build configuration
+config = StaticBuildConfig(
+    mass_mode='fixed',  # Fixed mass matrix for consistency
+    precision='double',  # Double precision
+    random_state=42  # For reproducibility
+)
+
+# Run α-flow analysis with proper arguments
+results = spectral_analyzer.analyze_alpha_flow(sheaf, spec, config, True)
+
+# Import and use the pretty printer
+from neurosheaf.utils import print_alpha_flow_results
+
+print(print_alpha_flow_results(results))
+'''
 results = spectral_analyzer.analyze(
         sheaf,
         filtration_type='threshold',
@@ -241,3 +300,10 @@ try:
         print(f"✅ Summary plot '{plot_name}' saved as '{filename}'")
 except Exception as e:
     print(f"⚠️  Could not create analysis summary: {e}")
+
+from neurosheaf.io import save_eigenvalue_evolution
+save_eigenvalue_evolution(
+      results['persistence_result']['eigenvalue_sequences'],
+      results['filtration_params'],
+      'eigenvalue_evolution.npz'
+  )

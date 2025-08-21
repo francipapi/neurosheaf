@@ -16,6 +16,11 @@ from .types import (
     WhiteningResult,
     TransportValidation
 )
+from .eigenvalue_io import (
+    save_eigenvalue_evolution,
+    load_eigenvalue_evolution,
+    convert_eigenvalue_sequences_to_matrix
+)
 
 __all__ = [
     # Configuration
@@ -30,5 +35,10 @@ __all__ = [
     "StepDiagnostics",
     "CertificateResult",
     "WhiteningResult",
-    "TransportValidation"
+    "TransportValidation",
+    
+    # Eigenvalue I/O
+    "save_eigenvalue_evolution",
+    "load_eigenvalue_evolution",
+    "convert_eigenvalue_sequences_to_matrix"
 ]

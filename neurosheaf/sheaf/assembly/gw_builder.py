@@ -220,32 +220,60 @@ class GWRestrictionManager:
         if eps <= 0:
             raise ValueError(f"eps must be positive, got {eps}")
             
-        if activation_tensor.dim() != 2:
-            raise ValueError(f"Expected 2D activation tensor, got shape {activation_tensor.shape}")
-        
         # Ensure consistent dtype
         target_dtype = self.config.get_torch_dtype()
         activation_tensor = activation_tensor.to(dtype=target_dtype)
         
-        batch_size, n_features = activation_tensor.shape
+        # Reshape activation tensor to (batch_size, n_features) if needed
+        if activation_tensor.dim() > 2:
+            # Flatten all dimensions except first (batch dimension)
+            activation_flat = activation_tensor.view(activation_tensor.shape[0], -1)
+            logger.debug(f"Reshaped activation tensor from {activation_tensor.shape} to {activation_flat.shape}")
+        elif activation_tensor.dim() == 2:
+            activation_flat = activation_tensor
+        else:
+            raise ValueError(f"Expected activation tensor with at least 2 dimensions, got shape {activation_tensor.shape}")
+        
+        batch_size, n_features = activation_flat.shape
         if batch_size < 2:
             logger.warning(f"Batch size {batch_size} < 2, variance computation may be unreliable")
         
         # Transpose to (n_features, batch_size) for unit-wise variance computation
         # Each row represents a unit's activations across the batch
-        units_activations = activation_tensor.T  # Shape: (n_features, batch_size)
+        units_activations = activation_flat.T  # Shape: (n_features, batch_size)
+        
+        # Check for zero vectors (units with zero norm across all samples)
+        unit_norms = torch.norm(units_activations, dim=1)  # Shape: (n_features,)
+        zero_units = (unit_norms < 1e-12)
+        n_zero_units = zero_units.sum().item()
+        
+        if n_zero_units > 0:
+            logger.debug(f"Found {n_zero_units} zero/near-zero units out of {n_features} total units")
         
         # Compute variance for each unit across the batch dimension
         unit_variances = torch.var(units_activations, dim=1, unbiased=False)  # Shape: (n_features,)
         
+        # Handle zero variance units (constant units) - these should get low but non-zero weight
+        zero_var_units = (unit_variances < 1e-12)
+        n_zero_var_units = zero_var_units.sum().item()
+        
+        if n_zero_var_units > 0:
+            logger.debug(f"Found {n_zero_var_units} constant units (zero variance) out of {n_features} total units")
+        
         # Apply floor to prevent zero weights and ensure numerical stability
+        # Use a larger floor value for zero/constant units to give them minimal but non-zero weight
         floored_variances = unit_variances + eps
+        
+        # Give constant/zero units slightly higher weight than pure eps to maintain some signal
+        # but much lower than variable units
+        constant_unit_weight = eps * 2.0
+        floored_variances = torch.where(zero_var_units | zero_units, constant_unit_weight, floored_variances)
         
         # Normalize to probability distribution
         measures = floored_variances / floored_variances.sum()
         
         # Validate result
-        assert torch.allclose(measures.sum(), torch.tensor(1.0), atol=1e-6), \
+        assert torch.allclose(measures.sum(), torch.tensor(1.0, dtype=target_dtype), atol=1e-6), \
             f"Measures should sum to 1.0, got {measures.sum():.6f}"
         assert torch.all(measures > 0), "All measures should be positive"
         
