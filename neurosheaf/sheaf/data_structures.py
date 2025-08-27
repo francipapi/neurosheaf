@@ -410,8 +410,39 @@ class Sheaf:
                       f"sparsity={metrics['sparsity']:.1%}")
                 shown_count += 1
         
-        # 5. Special Metadata
-        print("\n5. SPECIAL METADATA:")
+        # 5. GW Costs Analysis (if available)
+        if self.is_gw_sheaf():
+            print("\n5. GROMOV-WASSERSTEIN COSTS:")
+            print("-"*40)
+            
+            gw_costs = self.get_gw_costs()
+            if gw_costs:
+                cost_values = list(gw_costs.values())
+                cost_items = [(edge, cost) for edge, cost in gw_costs.items()]
+                cost_items.sort(key=lambda x: x[1], reverse=True)  # Sort by cost (descending)
+                
+                print(f"  GW cost range: [{min(cost_values):.6f}, {max(cost_values):.6f}]")
+                print(f"  GW cost mean: {sum(cost_values)/len(cost_values):.6f}")
+                print(f"  GW cost std: {np.std(cost_values):.6f}")
+                
+                # Show top problematic edges
+                print(f"\n  Top 5 highest GW costs:")
+                for i, (edge, cost) in enumerate(cost_items[:5]):
+                    source, target = edge
+                    print(f"    {i+1}. {source} → {target}: {cost:.6f}")
+                
+                # Identify cost outliers
+                mean_cost = np.mean(cost_values)
+                std_cost = np.std(cost_values)
+                outliers = [cost for cost in cost_values if cost > mean_cost + 2*std_cost]
+                if outliers:
+                    print(f"  ⚠️  Cost outliers (>mean+2σ): {len(outliers)} edges")
+                    print(f"      Outlier threshold: {mean_cost + 2*std_cost:.6f}")
+            else:
+                print("  No GW costs available")
+        
+        # 6. Special Metadata
+        print("\n6. SPECIAL METADATA:")
         print("-"*40)
         
         # Eigenvalue metadata
@@ -433,8 +464,8 @@ class Sheaf:
         if self.whitening_maps:
             print(f"  Whitening maps: {len(self.whitening_maps)} stored")
         
-        # 6. Distinguishing Features (Summary)
-        print("\n6. DISTINGUISHING FEATURES:")
+        # 7. Distinguishing Features (Summary)
+        print("\n7. DISTINGUISHING FEATURES:")
         print("-"*40)
         
         # Create a "fingerprint" of the sheaf

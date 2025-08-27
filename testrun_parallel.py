@@ -27,6 +27,10 @@ import fnmatch
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.utils.data
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
 import numpy as np
 import psutil
 from tqdm import tqdm
@@ -186,6 +190,53 @@ class CustomModel(nn.Module):
         
         return x
 
+class MLP4x256(nn.Module):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 64, num_classes: int = 10):
+        super().__init__()
+        dims = [784] + [hidden_dim] * num_layers
+        layers = []
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.LayerNorm(dims[i + 1]))
+            layers.append(nn.GELU())
+        self.backbone = nn.Sequential(*layers)
+        self.head = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        x = self.backbone(x)
+        return self.head(x)
+
+class TinyCNN(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        # Channels chosen to minimize units while staying usable for MNIST
+        self.conv1 = nn.Conv2d(1, 4, kernel_size=7, stride=7, padding=0, bias=True)   # 28x28 -> 4x4
+        self.conv2 = nn.Conv2d(4, 16, kernel_size=2, stride=1, padding=0, bias=True)  # 4x4   -> 3x3
+        self.conv3 = nn.Conv2d(16, 20, kernel_size=2, stride=1, padding=0, bias=True) # 3x3   -> 2x2
+        self.conv4 = nn.Conv2d(20, 24, kernel_size=2, stride=1, padding=0, bias=True) # 2x2   -> 1x1
+        self.fc    = nn.Linear(24, num_classes)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))   # [B, 4, 4, 4]
+        x = F.relu(self.conv2(x))   # [B, 16, 3, 3]
+        x = F.relu(self.conv3(x))   # [B, 20, 2, 2]
+        x = F.relu(self.conv4(x))   # [B, 24, 1, 1]
+        x = x.view(x.size(0), -1)   # [B, 24]
+        return self.fc(x)
+
 
 class ModelProcessor:
     """Handles model loading, processing, and result saving."""
@@ -202,6 +253,57 @@ class ModelProcessor:
         if torch.cuda.is_available():
             torch.cuda.manual_seed(self.random_seed)
             torch.cuda.manual_seed_all(self.random_seed)
+        
+        # Initialize MNIST dataset for MNIST models (lazy loading)
+        self.mnist_data = None
+        self.mnist_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x.view(-1))  # Flatten 28x28 to 784
+        ])
+    
+    def is_mnist_model(self, model_name: str) -> bool:
+        """Check if a model is MNIST-based by its filename pattern."""
+        return (model_name.startswith('mlp4layer_mnist') or 
+                model_name.startswith('mnist_mlp') or
+                model_name.startswith('tinycnn'))
+    
+    def load_mnist_data(self, model) -> torch.Tensor:
+        """Load MNIST test data with appropriate transform based on model type."""
+        # Choose transform based on model type
+        if isinstance(model, TinyCNN):
+            # CNN models need 2D images: [batch_size, 1, 28, 28]
+            transform = transforms.ToTensor()
+            self.logger.info("Using 2D transform for CNN model")
+        else:
+            # MLP models need flattened input: [batch_size, 784]
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.view(-1))
+            ])
+            self.logger.info("Using flattened transform for MLP model")
+        
+        self.logger.info("Loading MNIST dataset...")
+        try:
+            mnist_test = datasets.MNIST(
+                root='./data', 
+                train=False, 
+                download=True, 
+                transform=transform
+            )
+            
+            # Create data loader and get first batch_size samples
+            test_loader = torch.utils.data.DataLoader(
+                mnist_test, 
+                batch_size=self.batch_size, 
+                shuffle=False
+            )
+            data, labels = next(iter(test_loader))
+            self.logger.info(f"Loaded MNIST data shape: {data.shape}")
+            self.logger.info(f"Labels for first 10 samples: {labels[:10].tolist()}")
+            return data
+        except Exception as e:
+            self.logger.error(f"Failed to load MNIST data: {e}")
+            return None
     
     def load_model_by_type(self, model_path: Path) -> Optional[torch.nn.Module]:
         """Auto-detect model type from filename and load with appropriate architecture."""
@@ -212,6 +314,14 @@ class ModelProcessor:
                 return load_model(MLPModel, str(model_path))
             elif model_name.startswith('custom_'):
                 return load_model(CustomModel, str(model_path))
+            elif model_name.startswith('mlp4layer_mnist'):
+                return load_model(MLP4x256, str(model_path))
+            elif model_name.startswith('mnist_mlp'):
+                return load_model(MLP4x256, str(model_path))
+            elif model_name.startswith('tinycnn'):
+                return load_model(TinyCNN, str(model_path))
+            elif model_name.startswith('mlp4'):
+                return load_model(MLP4x256, str(model_path))
             else:
                 self.logger.warning(f"Unknown model type for {model_name}, trying as MLP")
                 return load_model(MLPModel, str(model_path))
@@ -238,26 +348,63 @@ class ModelProcessor:
             metadata['architecture'] = 'mlp'
         elif model_name.startswith('custom_'):
             metadata['architecture'] = 'custom'
+        elif model_name.startswith('mlp4layer_mnist'):
+            metadata['architecture'] = 'mlp4layer_mnist'
+        elif model_name.startswith('mnist_mlp'):
+            metadata['architecture'] = 'mnist_mlp'
+        elif model_name.startswith('tinycnn_mnist'):
+            metadata['architecture'] = 'tinycnn_mnist'
+        elif model_name.startswith('tinycnn_random'):
+            metadata['architecture'] = 'tinycnn_mnist'  # Same architecture, different training
+        elif model_name.startswith('tinycnn'):
+            metadata['architecture'] = 'tinycnn'
+        elif model_name.startswith('mlp4'):
+            metadata['architecture'] = 'mlp4'
         
-        # Parse type from second segment
+        # Handle different naming patterns
         parts = model_name.split('_')
-        if len(parts) >= 2:
-            metadata['type'] = parts[1]  # 'random' or 'trained'
         
-        # Extract version number (always present as vXX)
-        version_match = re.search(r'_v(\d+)', model_name)
-        if version_match:
-            metadata['version'] = version_match.group(1)
-        
-        # For trained models, extract accuracy and epochs
-        if metadata['type'] == 'trained':
-            acc_match = re.search(r'_acc([0-9.]+)', model_name)
-            if acc_match:
-                metadata['accuracy'] = acc_match.group(1)
+        if model_name.startswith('mlp4layer_mnist'):
+            # Pattern: mlp4layer_mnist_seedXX
+            metadata['type'] = 'trained'  # These are trained models
+            seed_match = re.search(r'seed(\d+)', model_name)
+            if seed_match:
+                metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('tinycnn_mnist'):
+            # Pattern: tinycnn_mnist.pth
+            metadata['type'] = 'trained'  # These are trained models
+        elif model_name.startswith('tinycnn_random'):
+            # Pattern: tinycnn_random_XXX
+            metadata['type'] = 'random'
+            # Extract version number (last part)
+            if len(parts) >= 3:
+                metadata['version'] = parts[2]  # '001', '005', etc.
+        elif model_name.startswith('mnist_mlp'):
+            # Pattern: mnist_mlp_random_XXX
+            if len(parts) >= 3:
+                metadata['type'] = parts[2]  # 'random'
+            # Extract version number (last part)
+            if len(parts) >= 4:
+                metadata['version'] = parts[3]  # '001', '002', etc.
+        else:
+            # Original patterns: mlp_*, custom_*
+            if len(parts) >= 2:
+                metadata['type'] = parts[1]  # 'random' or 'trained'
             
-            ep_match = re.search(r'_ep(\d+)', model_name)
-            if ep_match:
-                metadata['epochs'] = ep_match.group(1)
+            # Extract version number (always present as vXX)
+            version_match = re.search(r'_v(\d+)', model_name)
+            if version_match:
+                metadata['version'] = version_match.group(1)
+            
+            # For trained models, extract accuracy and epochs
+            if metadata['type'] == 'trained':
+                acc_match = re.search(r'_acc([0-9.]+)', model_name)
+                if acc_match:
+                    metadata['accuracy'] = acc_match.group(1)
+                
+                ep_match = re.search(r'_ep(\d+)', model_name)
+                if ep_match:
+                    metadata['epochs'] = ep_match.group(1)
         
         return metadata
     
@@ -271,9 +418,19 @@ class ModelProcessor:
             if model is None:
                 return None
             
-            # Generate test data - exact same as testrun.py
-            data = 10 * torch.randn(self.batch_size, 3)
-            self.logger.info(f"Generated data shape: {data.shape}")
+            model_name = model_path.stem
+            
+            # Generate appropriate test data based on model type
+            if self.is_mnist_model(model_name):
+                # Load actual MNIST data for MNIST models
+                data = self.load_mnist_data(model)
+                if data is None:
+                    self.logger.error(f"Failed to load MNIST data for {model_name}")
+                    return None
+            else:
+                # Generate random data for other models - exact same as testrun.py
+                data = 10 * torch.randn(self.batch_size, 3)
+                self.logger.info(f"Generated random data shape: {data.shape}")
             
             # Use high-level API exactly like testrun.py
             analyzer = NeurosheafAnalyzer(device='cpu')

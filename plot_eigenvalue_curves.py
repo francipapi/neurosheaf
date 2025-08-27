@@ -38,7 +38,7 @@ except ImportError:
 plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
-def load_eigenvalue_data(data_dir: str) -> Dict[str, Dict]:
+def load_eigenvalue_data(data_dir: str, include_unknown: bool = False) -> Dict[str, Dict]:
     """
     Load all eigenvalue evolution data from the specified directory.
     
@@ -70,7 +70,7 @@ def load_eigenvalue_data(data_dir: str) -> Dict[str, Dict]:
     for file_path in model_files:
         try:
             model_name = pathlib.Path(file_path).stem
-            data = load_single_file(file_path, model_name)
+            data = load_single_file(file_path, model_name, include_unknown)
             if data:
                 models_data[model_name] = data
         except Exception as e:
@@ -83,7 +83,7 @@ def load_eigenvalue_data(data_dir: str) -> Dict[str, Dict]:
     
     return models_data
 
-def load_single_file(file_path: str, model_name: str) -> Optional[Dict]:
+def load_single_file(file_path: str, model_name: str, include_unknown: bool = False) -> Optional[Dict]:
     """Load a single eigenvalue evolution file."""
     try:
         if file_path.endswith('.npz'):
@@ -123,6 +123,11 @@ def load_single_file(file_path: str, model_name: str) -> Optional[Dict]:
         # Classify model
         classification = classify_model(model_name)
         
+        # Skip unknown/other models unless explicitly requested
+        if not include_unknown and (classification['architecture'] == 'Other' or classification['status'] == 'Unknown'):
+            print(f"[INFO] Skipping unknown model: {model_name} (category: {classification['category']})")
+            return None
+        
         return {
             'eigenvalues': eigenvalues,
             'time': time,
@@ -145,21 +150,71 @@ def classify_model(model_name: str) -> Dict[str, str]:
     """
     name_lower = model_name.lower()
     
-    # Determine architecture
-    if any(x in name_lower for x in ['custom', 'conv']):
+    # Handle MNIST models first (more specific patterns)
+    if name_lower.startswith('mlp4layer_mnist'):
+        # Pattern: mlp4layer_mnist_seedXX
+        architecture = 'MNIST-MLP4'
+        status = 'Trained'  # These models are trained on MNIST
+    elif name_lower.startswith('tinycnn_mnist'):
+        # Pattern: tinycnn_mnist.pth
+        architecture = 'MNIST-CNN'
+        status = 'Trained'  # These models are trained on MNIST
+    elif name_lower.startswith('tinycnn_random'):
+        # Pattern: tinycnn_random_XXX
+        architecture = 'MNIST-CNN'
+        status = 'Random'
+    elif name_lower.startswith('tinycnn'):
+        # General TinyCNN pattern
+        architecture = 'MNIST-CNN'
+        # Determine status from context
+        if any(x in name_lower for x in ['random', 'rand']):
+            status = 'Random'
+        elif any(x in name_lower for x in ['trained', 'acc']):
+            status = 'Trained'
+        else:
+            status = 'Trained'  # Default for TinyCNN
+    elif name_lower.startswith('mnist_mlp_random'):
+        # Pattern: mnist_mlp_random_XXX
+        architecture = 'MNIST-MLP'
+        status = 'Random'
+    elif name_lower.startswith('mnist_mlp'):
+        # General MNIST MLP pattern
+        architecture = 'MNIST-MLP'
+        # Determine status from context
+        if any(x in name_lower for x in ['random', 'rand']):
+            status = 'Random'
+        elif any(x in name_lower for x in ['trained', 'acc']):
+            status = 'Trained'
+        else:
+            status = 'Unknown'
+    # Handle regular (non-MNIST) models
+    elif any(x in name_lower for x in ['custom', 'conv']):
         architecture = 'Custom'
+        # Determine training status
+        if any(x in name_lower for x in ['trained', 'acc']):
+            status = 'Trained'
+        elif any(x in name_lower for x in ['random', 'rand']):
+            status = 'Random'
+        else:
+            status = 'Unknown'
     elif any(x in name_lower for x in ['mlp']):
         architecture = 'MLP'
+        # Determine training status
+        if any(x in name_lower for x in ['trained', 'acc']):
+            status = 'Trained'
+        elif any(x in name_lower for x in ['random', 'rand']):
+            status = 'Random'
+        else:
+            status = 'Unknown'
     else:
         architecture = 'Other'
-    
-    # Determine training status
-    if any(x in name_lower for x in ['trained', 'acc']):
-        status = 'Trained'
-    elif any(x in name_lower for x in ['random', 'rand']):
-        status = 'Random'
-    else:
-        status = 'Unknown'
+        # Determine training status
+        if any(x in name_lower for x in ['trained', 'acc']):
+            status = 'Trained'
+        elif any(x in name_lower for x in ['random', 'rand']):
+            status = 'Random'
+        else:
+            status = 'Unknown'
     
     # Combined category
     category = f"{architecture}-{status}"
@@ -169,6 +224,7 @@ def classify_model(model_name: str) -> Dict[str, str]:
         'status': status,
         'category': category
     }
+
 
 def compute_mean_curve(eigenvalues: np.ndarray, use_log: bool = False) -> np.ndarray:
     """Compute mean eigenvalue curve across all eigenvalues at each time step."""
@@ -184,6 +240,7 @@ def compute_mean_curve(eigenvalues: np.ndarray, use_log: bool = False) -> np.nda
 def get_color_scheme() -> Dict[str, Dict]:
     """Define color scheme for different model categories."""
     return {
+        # Original model categories
         'Custom-Trained': {
             'color': '#1f77b4',  # Blue
             'linestyle': '-',     # Solid
@@ -218,34 +275,177 @@ def get_color_scheme() -> Dict[str, Dict]:
             'color': '#808080',  # Gray
             'linestyle': ':',     # Dotted
             'alpha': 0.5
+        },
+        # MNIST model categories
+        'MNIST-MLP4-Trained': {
+            'color': '#ff7f0e',  # Orange
+            'linestyle': '-',     # Solid
+            'alpha': 0.8
+        },
+        'MNIST-MLP-Random': {
+            'color': '#9467bd',  # Purple
+            'linestyle': '--',    # Dashed
+            'alpha': 0.7
+        },
+        'MNIST-MLP-Trained': {
+            'color': '#9467bd',  # Purple
+            'linestyle': '-',     # Solid
+            'alpha': 0.8
+        },
+        'MNIST-MLP-Unknown': {
+            'color': '#9467bd',  # Purple
+            'linestyle': ':',     # Dotted
+            'alpha': 0.6
+        },
+        # TinyCNN categories - using different colors for trained vs random
+        'MNIST-CNN-Trained': {
+            'color': '#2ca02c',  # Green
+            'linestyle': '-',     # Solid
+            'alpha': 0.8
+        },
+        'MNIST-CNN-Random': {
+            'color': '#17becf',  # Cyan
+            'linestyle': '--',    # Dashed
+            'alpha': 0.7
+        },
+        'MNIST-CNN-Unknown': {
+            'color': '#808080',  # Gray
+            'linestyle': ':',     # Dotted
+            'alpha': 0.6
         }
     }
 
-def resample_to_common_grid(models_data: Dict, n_points: int = 200) -> Dict:
-    """Resample all curves to a common time grid for easier comparison."""
-    # Find common time range
-    t_mins = [data['time'][0] for data in models_data.values()]
-    t_maxs = [data['time'][-1] for data in models_data.values()]
+def detect_and_remove_outliers(eigenvalues: np.ndarray, time: np.ndarray, 
+                               method: str = 'none', model_name: str = '', 
+                               category: str = '') -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Outlier detection and removal, including specific handling for TinyCNN models.
     
-    t_min = max(t_mins)  # Latest start
-    t_max = min(t_maxs)  # Earliest end
+    Args:
+        eigenvalues: (n_time, n_eigenvalues) array
+        time: (n_time,) array
+        method: Detection method ('none', 'iqr', 'zscore', 'trajectory_end')
+        model_name: Name of the model for identification
+        category: Category of the model (e.g., 'MNIST-CNN-Trained')
+        
+    Returns:
+        Tuple of (cleaned_eigenvalues, cleaned_time)
+    """
     
-    if t_max <= t_min:
-        print("[WARN] No overlapping time range found, using full range")
-        t_min = min(t_mins)
-        t_max = max(t_maxs)
+    if method == 'trajectory_end':
+        # Remove last point from trained TinyCNN models
+        # Identify TinyCNN models by name or category
+        is_tinycnn_trained = (
+            ('tinycnn' in model_name.lower() and 
+             ('trained' in category.lower() or 'mnist-cnn-trained' in category.lower())) or
+            (category.lower() == 'mnist-cnn-trained')
+        )
+        
+        if is_tinycnn_trained and len(time) > 1:
+            print(f"[INFO] {model_name}: Removing last datapoint (TinyCNN trained model)")
+            # Remove last point from both eigenvalues and time
+            return eigenvalues[:-1, :], time[:-1]
+        else:
+            # Not a TinyCNN trained model, return unchanged
+            return eigenvalues, time
     
-    # Common time grid
-    common_time = np.linspace(t_min, t_max, n_points)
+    elif method == 'iqr':
+        # TODO: Implement IQR-based outlier detection
+        print(f"[INFO] IQR outlier detection not yet implemented for {model_name}")
+        return eigenvalues, time
     
-    resampled_data = {}
+    elif method == 'zscore':
+        # TODO: Implement z-score-based outlier detection
+        print(f"[INFO] Z-score outlier detection not yet implemented for {model_name}")
+        return eigenvalues, time
+    
+    # Default: return unchanged
+    return eigenvalues, time
+
+def resample_to_common_grid(models_data: Dict, n_points: int = 200, 
+                           outlier_method: str = 'none') -> Dict:
+    """
+    Resample all curves to a common [0, 1] time grid with outlier detection.
+    
+    Args:
+        models_data: Dictionary of model data
+        n_points: Number of interpolation points
+        outlier_method: Method for outlier detection ('none', 'iqr', 'zscore', 'trajectory_end')
+        
+    Returns:
+        Dictionary with resampled data normalized to [0, 1] time range
+    """
+    
+    # Step 1: Apply outlier detection (placeholder for now)
+    print(f"[INFO] Applying outlier detection method: {outlier_method}")
+    cleaned_data = {}
+    outlier_stats = {'models_processed': 0, 'outliers_found': 0}
+    
     for name, data in models_data.items():
+        eigenvalues = data['eigenvalues']
+        time = data['time']
+        
+        # Apply outlier detection
+        cleaned_eigenvalues, cleaned_time = detect_and_remove_outliers(
+            eigenvalues, time, method=outlier_method,
+            model_name=name, category=data.get('category', '')
+        )
+        
+        # Track if any outliers were removed
+        if len(cleaned_time) != len(time):
+            outlier_stats['outliers_found'] += 1
+            print(f"[INFO] {name}: Removed {len(time) - len(cleaned_time)} outlier points")
+        
+        outlier_stats['models_processed'] += 1
+        
+        cleaned_data[name] = {
+            **data,
+            'eigenvalues': cleaned_eigenvalues,
+            'time': cleaned_time,
+            'original_shape': eigenvalues.shape,
+            'outliers_removed': len(time) - len(cleaned_time)
+        }
+    
+    print(f"[INFO] Outlier detection complete: {outlier_stats['outliers_found']}/{outlier_stats['models_processed']} models had outliers")
+    
+    # Step 2: Normalize time to [0, 1] for all models
+    print("[INFO] Normalizing all time coordinates to [0, 1] range")
+    normalized_data = {}
+    original_ranges = {}
+    
+    for name, data in cleaned_data.items():
+        time = data['time']
+        t_min, t_max = float(time.min()), float(time.max())
+        original_ranges[name] = (t_min, t_max)
+        
+        # Normalize to [0, 1]
+        if t_max > t_min:
+            normalized_time = (time - t_min) / (t_max - t_min)
+        else:
+            # Handle edge case where all time points are the same
+            normalized_time = np.zeros_like(time)
+            print(f"[WARN] {name}: All time points identical, using zeros")
+        
+        normalized_data[name] = {
+            **data,
+            'time': normalized_time,
+            'original_time_range': (t_min, t_max)
+        }
+    
+    # Step 3: Create common grid in [0, 1]
+    common_time = np.linspace(0, 1, n_points)
+    print(f"[INFO] Created common time grid: [0, 1] with {n_points} points")
+    
+    # Step 4: Resample all models to common [0, 1] grid
+    print("[INFO] Resampling all models to common [0, 1] grid")
+    resampled_data = {}
+    
+    for name, data in normalized_data.items():
         try:
-            # Interpolate eigenvalue matrix
             eigenvalues = data['eigenvalues']
             time = data['time']
             
-            # Resample each eigenvalue series
+            # Resample each eigenvalue series to common grid
             resampled_eigenvalues = np.zeros((n_points, eigenvalues.shape[1]))
             for i in range(eigenvalues.shape[1]):
                 resampled_eigenvalues[:, i] = np.interp(common_time, time, eigenvalues[:, i])
@@ -253,13 +453,21 @@ def resample_to_common_grid(models_data: Dict, n_points: int = 200) -> Dict:
             resampled_data[name] = {
                 **data,
                 'eigenvalues': resampled_eigenvalues,
-                'time': common_time
+                'time': common_time,  # Now [0, 1] range
+                'normalized': True
             }
         except Exception as e:
             print(f"[WARN] Failed to resample {name}: {e}")
     
-    print(f"[INFO] Resampled {len(resampled_data)} models to common grid [{t_min:.4f}, {t_max:.4f}]")
+    # Report summary
+    if original_ranges:
+        all_mins = [r[0] for r in original_ranges.values()]
+        all_maxs = [r[1] for r in original_ranges.values()]
+        print(f"[INFO] Original time ranges spanned: [{min(all_mins):.6f}, {max(all_maxs):.6f}]")
+    
+    print(f"[INFO] Successfully resampled {len(resampled_data)} models to normalized [0, 1] grid")
     return resampled_data
+
 
 def plot_curves(models_data: Dict, use_log: bool = False, show_stats: bool = True, 
                 output_file: str = "eigenvalue_curves.png") -> None:
@@ -348,7 +556,7 @@ def plot_curves(models_data: Dict, use_log: bool = False, show_stats: bool = Tru
                                alpha=0.15)
     
     # Formatting
-    ax.set_xlabel('Time / Filtration Parameter', fontsize=12)
+    ax.set_xlabel('Filtration Parameter', fontsize=12)
     if use_log:
         ax.set_ylabel('Mean Log(Eigenvalue + 1)', fontsize=12)
         ax.set_title('Mean Eigenvalue Evolution (Log Scale)', fontsize=14, fontweight='bold')
@@ -433,7 +641,7 @@ def create_subplots(models_data: Dict, use_log: bool = False,
                    alpha=1.0)
         
         ax.set_title(f"{category} (n={len(models)})", fontweight='bold')
-        ax.set_xlabel('Time / Filtration Parameter')
+        ax.set_xlabel('Filtration Parameter')
         if use_log:
             ax.set_ylabel('Mean Log(Eigenvalue + 1)')
         else:
@@ -510,7 +718,7 @@ def create_interactive_plot(models_data: Dict, use_log: bool = False,
     
     fig.update_layout(
         title=title,
-        xaxis_title='Time / Filtration Parameter',
+        xaxis_title='Filtration Parameter',
         yaxis_title=yaxis_title,
         hovermode='closest',
         showlegend=True,
@@ -585,17 +793,22 @@ def main():
                        help='Disable statistical overlays (mean curves and bands)')
     parser.add_argument('--output-prefix', type=str, default='eigenvalue_curves',
                        help='Output file prefix')
+    parser.add_argument('--include-unknown', action='store_true',
+                       help='Include unknown/unclassified models in the plots')
+    parser.add_argument('--outlier-method', type=str, default='none',
+                       choices=['none', 'iqr', 'zscore', 'trajectory_end'],
+                       help='Method for outlier detection (placeholder for future implementation)')
     
     args = parser.parse_args()
     
     # Load data
-    models_data = load_eigenvalue_data(args.data_dir)
+    models_data = load_eigenvalue_data(args.data_dir, include_unknown=args.include_unknown)
     if not models_data:
         print("[ERROR] No models loaded!")
         return
     
-    # Resample to common grid for fair comparison
-    models_data = resample_to_common_grid(models_data)
+    # Resample to common [0, 1] grid with outlier detection
+    models_data = resample_to_common_grid(models_data, outlier_method=args.outlier_method)
     
     # Create main plot
     output_file = f"{args.output_prefix}.png"

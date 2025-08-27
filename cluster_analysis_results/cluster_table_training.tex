@@ -1,0 +1,35 @@
+
+% Cluster Analysis Results Table for training
+\begin{table}[h!]
+\centering
+\caption{Cluster Analysis Results: Training Labels}
+\label{tab:cluster_training}
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{Internal Quality}} \\
+Silhouette Coefficient & 0.527 & [0.423, 0.630] \\
+Davies-Bouldin Index & 0.929 & [0.676, 1.127] \\
+Calinski-Harabasz & 50 & [23, 96] \\
+Dunn Index & 0.065 & [0.065, 0.110] \\
+Cophenetic Correlation & 0.703 & [0.535, 0.792] \\
+\midrule
+\multicolumn{3}{l}{\textbf{External Validation}} \\
+Adjusted Rand Index & 0.115 & [-0.006, 0.268] \\
+Adjusted Mutual Info & 0.177 & [0.051, 0.341] \\
+V-measure & 0.186 & [0.078, 0.344] \\
+\midrule
+\multicolumn{3}{l}{\textbf{Hypothesis Tests}} \\
+PERMANOVA F & 131.66 & $p = 0.00e+00$ \\
+ANOSIM R & 0.310 & $p = 0.00e+00$ \\
+\midrule
+\multicolumn{3}{l}{\textbf{Effect Sizes}} \\
+Cohen's $d$ & 0.598 & - \\
+Margin & -2.935 & - \\
+\midrule
+\multicolumn{3}{l}{\textbf{Stability}} \\
+Jaccard Stability & 0.394 & [0.286, 0.526] \\
+\bottomrule
+\end{tabular}
+\end{table}

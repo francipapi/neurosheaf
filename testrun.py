@@ -18,6 +18,7 @@ from neurosheaf.spectral.flows.alpha_flow import AlphaGroupingPolicy
 from neurosheaf.utils import load_model
 from neurosheaf.api import NeurosheafAnalyzer
 from neurosheaf.visualization import EnhancedVisualizationFactory
+import torch.nn.functional as F
 
 # NEW: GW Subspace Tracker imports
 from neurosheaf.spectral.gw.gw_subspace_tracker import GWSubspaceTracker
@@ -191,19 +192,203 @@ class CustomModel(nn.Module):
         return x
 
 class MLP4x256(nn.Module):
-    def __init__(self, num_layers: int = 4, hidden_dim: int = 64, num_classes: int = 10):
+    def __init__(self, num_layers: int = 10, hidden_dim: int = 32, num_classes: int = 10):
         super().__init__()
-        dims = [784] + [hidden_dim] * num_layers
+        dims = [28*28] + [hidden_dim] * num_layers
         layers = []
         for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1]))
-            layers.append(nn.LayerNorm(dims[i + 1]))
-            layers.append(nn.GELU())
+            layers.append(nn.Linear(dims[i], dims[i + 1], bias=False))
+            layers.append(nn.BatchNorm1d(dims[i + 1]))
+            layers.append(nn.ReLU(inplace=True))
         self.backbone = nn.Sequential(*layers)
         self.head = nn.Linear(hidden_dim, num_classes)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.view(x.size(0), -1)
+        x = self.backbone(x)
+        return self.head(x)
+
+class TinyCNN(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        # Convs (bias not needed with BatchNorm)
+        self.conv1 = nn.Conv2d(1,  4, kernel_size=7, stride=7, padding=0, bias=False)  # 28x28 -> 4x4
+        self.conv2 = nn.Conv2d(4, 16, kernel_size=2, stride=1, padding=0, bias=False)  # 4x4   -> 3x3
+        self.conv3 = nn.Conv2d(16,20, kernel_size=2, stride=1, padding=0, bias=False)  # 3x3   -> 2x2
+        self.conv4 = nn.Conv2d(20,24, kernel_size=2, stride=1, padding=0, bias=False)  # 2x2   -> 1x1
+
+        # BatchNorms
+        self.bn1 = nn.BatchNorm2d(4)
+        self.bn2 = nn.BatchNorm2d(16)
+        self.bn3 = nn.BatchNorm2d(20)
+        self.bn4 = nn.BatchNorm2d(24)
+
+        self.fc  = nn.Linear(24, num_classes)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))  # [B, 4, 4, 4]
+        x = F.relu(self.bn2(self.conv2(x)))  # [B, 16, 3, 3]
+        x = F.relu(self.bn3(self.conv3(x)))  # [B, 20, 2, 2]
+        x = F.relu(self.bn4(self.conv4(x)))  # [B, 24, 1, 1]
+        x = x.view(x.size(0), -1)            # [B, 24]
+        return self.fc(x)                    # logits
+
+class Hybrid1DCNN(nn.Module):
+    """
+    Redesigned Hybrid 1D CNN with aggressive dimension reduction.
+    Uses strided convolutions and early pooling to minimize activation sizes for neurosheaf pipeline.
+    Target Laplacian size: ~2K×2K (95% reduction from original 37K×37K)
+    """
+    
+    def __init__(self, input_dim: int = 104, num_classes: int = 2):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        
+        # Stage 1: Initial feature extraction with immediate dimension reduction
+        # Input: [B, 1, 104]
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=7, stride=2, padding=3, bias=False)
+        # Output: [B, 16, 52] - Halved spatial dimension immediately
+        self.bn1 = nn.BatchNorm1d(16)
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
+        # After pool1: [B, 16, 26] - Total dims: 416
+        
+        # Stage 2: Feature refinement with further reduction
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2, bias=False)
+        # Output: [B, 32, 13] - Total dims: 416
+        self.bn2 = nn.BatchNorm1d(32)
+        
+        # Stage 3: Deep features with aggressive spatial reduction
+        self.conv3 = nn.Conv1d(32, 48, kernel_size=3, stride=1, padding=1, bias=False)
+        # Output: [B, 48, 13] - Total dims: 624
+        self.bn3 = nn.BatchNorm1d(48)
+        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
+        # After pool2: [B, 48, 6] - Total dims: 288
+        
+        # Stage 4: Final conv with very small spatial dimension
+        self.conv4 = nn.Conv1d(48, 64, kernel_size=3, stride=1, padding=0, bias=False)
+        # Output: [B, 64, 4] - Very small spatial dimension, Total dims: 256
+        self.bn4 = nn.BatchNorm1d(64)
+        
+        # Global pooling to fixed size for consistent FC input
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        # Output: [B, 64, 1] - Total dims: 64
+        
+        # Compact MLP Head (all under 100 units)
+        self.fc1 = nn.Linear(64, 32, bias=False)
+        self.bn_fc1 = nn.BatchNorm1d(32)
+        self.dropout1 = nn.Dropout(0.3)
+        
+        self.fc2 = nn.Linear(32, 16, bias=False)
+        self.bn_fc2 = nn.BatchNorm1d(16)
+        
+        # Classification output
+        self.head = nn.Linear(16, num_classes)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input: [batch_size, features]
+        # Reshape for 1D conv: [batch_size, channels=1, features]
+        x = x.unsqueeze(1)  # [B, 1, 104]
+        
+        # Stage 1: Initial feature extraction with immediate reduction
+        x = F.relu(self.bn1(self.conv1(x)))      # [B, 16, 52]
+        x = self.pool1(x)                        # [B, 16, 26]
+        
+        # Stage 2: Feature refinement with further reduction
+        x = F.relu(self.bn2(self.conv2(x)))      # [B, 32, 13]
+        
+        # Stage 3: Deep features with aggressive spatial reduction
+        x = F.relu(self.bn3(self.conv3(x)))      # [B, 48, 13]
+        x = self.pool2(x)                        # [B, 48, 6]
+        
+        # Stage 4: Final conv with very small spatial dimension
+        x = F.relu(self.bn4(self.conv4(x)))      # [B, 64, 4]
+        
+        # Global pooling to fixed size
+        x = self.global_avg_pool(x)              # [B, 64, 1]
+        x = x.squeeze(-1)                        # [B, 64]
+        
+        # Compact MLP Head with regularization
+        x = F.relu(self.bn_fc1(self.fc1(x)))     # [B, 32]
+        x = self.dropout1(x)
+        x = F.relu(self.bn_fc2(self.fc2(x)))     # [B, 16]
+        
+        # Classification output (logits)
+        return self.head(x)        
+
+class DeepMLP(nn.Module):
+    """Deep MLP for binary classification with emphasis on depth over width."""
+    
+    def __init__(self, input_dim: int = 104, num_layers: int = 12, hidden_dim: int = 32, num_classes: int = 2):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+        
+        # Build deep network: input -> hidden1 -> ... -> hiddenN -> output
+        dims = [input_dim] + [hidden_dim] * num_layers
+        layers = []
+        
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1], bias=False))
+            layers.append(nn.BatchNorm1d(dims[i + 1]))
+            layers.append(nn.ReLU(inplace=True))
+            
+        self.backbone = nn.Sequential(*layers)
+        
+        # Classification head: output logits for binary classification
+        self.head = nn.Linear(hidden_dim, num_classes)
+        
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.backbone(x)
         return self.head(x)
 
@@ -215,24 +400,52 @@ rand_custom_path = "models/custom_random_seed42.pth"
 rand_mlp_path = "models/mlp_random_seed42.pth"
 mlp4 = "models/mlp4layer_mnist_seed42.pth"
 mlp4_rand = "models/mnist_mlp_random_001.pth"
+mnist_cnn = "models/tinycnn_mnist20.pth"
+rand_mnist_cnn = "models/tinycnn_random_001.pth"
+adult_cnn = "models/hybrid_cnn_adult.pth"
+adult_mlp = "models/deep_mlp_adult_seed42.pth"
 
-model = load_model(MLP4x256, mlp4)
+model = load_model(Hybrid1DCNN, adult_cnn)
 
-# Load actual MNIST data
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Lambda(lambda x: x.view(-1))  # Flatten 28x28 to 784
-])
+# Transform logic (commented out - only needed for MNIST)
+'''
+# Apply appropriate transform based on model type
+if isinstance(model, TinyCNN):
+    # CNN models need 2D images: [batch_size, 1, 28, 28]
+    transform = transforms.Compose([
+        transforms.ToTensor(),  # Converts to [1, 28, 28]
+    ])
+    print("Using 2D transform for CNN model")
+else:
+    # MLP models need flattened input: [batch_size, 784]
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.view(-1))  # Flatten 28x28 to 784
+    ])
+    print("Using flattened transform for MLP model")
+'''
 
+batch_size = 1000
+
+'''
 print("Loading MNIST dataset...")
 mnist_test = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
 # Get first batch_size test samples
-batch_size = 100
+
 test_loader = torch.utils.data.DataLoader(mnist_test, batch_size=batch_size, shuffle=False)
 data, labels = next(iter(test_loader))
 #data = 10 * torch.randn(self.batch_size, 3)
 print(f"Loaded MNIST data shape: {data.shape}")
+print(f"Labels for first 10 samples: {labels[:10].tolist()}")
+'''
+
+# Generate probe data for Adult dataset (104 features, binary classification)
+print("Generating probe data for Adult dataset...")
+data = torch.randn(batch_size, 104)  # 104 features for Adult dataset
+labels = torch.randint(0, 2, (batch_size,))  # Binary labels (0 or 1)
+
+print(f"Generated Adult probe data shape: {data.shape}")
 print(f"Labels for first 10 samples: {labels[:10].tolist()}")
 
 print("\n=== Building Sheaf Using High-Level API ===")
@@ -250,10 +463,67 @@ sheaf = analysis['sheaf']
 print(f"\n=== Filtered Sheaf Details ===")
 sheaf.print_detailed_summary(max_items=25, verbosity='detailed')
 
+print(f"\n=== GW COST ANALYSIS ===")
+print("="*60)
+
+# Extract GW costs from sheaf metadata
+gw_costs = sheaf.get_gw_costs()
+if gw_costs:
+    print(f"Total edges: {len(gw_costs)}")
+    
+    # Convert to sorted list for analysis
+    cost_items = [(edge, cost) for edge, cost in gw_costs.items()]
+    cost_items.sort(key=lambda x: x[1], reverse=True)  # Sort by cost (descending)
+    
+    costs_only = [cost for _, cost in cost_items]
+    print(f"GW cost range: [{min(costs_only):.6f}, {max(costs_only):.6f}]")
+    print(f"GW cost mean: {sum(costs_only)/len(costs_only):.6f}")
+    print(f"GW cost std: {(sum((c - sum(costs_only)/len(costs_only))**2 for c in costs_only) / len(costs_only))**0.5:.6f}")
+    
+    # Identify outliers (costs > mean + 2*std)
+    mean_cost = sum(costs_only) / len(costs_only)
+    std_cost = (sum((c - mean_cost)**2 for c in costs_only) / len(costs_only))**0.5
+    outlier_threshold = mean_cost + 2 * std_cost
+    
+    print(f"\n🔍 HIGHEST GW COSTS (Top 10):")
+    print("-" * 60)
+    for i, (edge, cost) in enumerate(cost_items[:10]):
+        source, target = edge
+        outlier_flag = "⚠️ OUTLIER" if cost > outlier_threshold else ""
+        print(f"  {i+1:2d}. {source} → {target}")
+        print(f"      GW Cost: {cost:.6f} {outlier_flag}")
+    
+    # Highlight the most problematic edge
+    worst_edge, worst_cost = cost_items[0]
+    print(f"\n🚨 MOST PROBLEMATIC EDGE: {worst_edge[0]} → {worst_edge[1]}")
+    print(f"   GW Cost: {worst_cost:.6f}")
+    print(f"   Cost ratio (worst/mean): {worst_cost/mean_cost:.2f}x")
+    
+    # Show layer type analysis
+    print(f"\n📊 LAYER TYPE ANALYSIS:")
+    print("-" * 40)
+    layer_costs = {}
+    for (source, target), cost in cost_items:
+        source_type = source.split('.')[0] if '.' in source else source.split('_')[0]
+        target_type = target.split('.')[0] if '.' in target else target.split('_')[0]
+        edge_type = f"{source_type} → {target_type}"
+        
+        if edge_type not in layer_costs:
+            layer_costs[edge_type] = []
+        layer_costs[edge_type].append(cost)
+    
+    for edge_type, costs in sorted(layer_costs.items(), key=lambda x: max(x[1]), reverse=True):
+        avg_cost = sum(costs) / len(costs)
+        max_cost = max(costs)
+        print(f"  {edge_type}: avg={avg_cost:.4f}, max={max_cost:.4f}, count={len(costs)}")
+
+else:
+    print("❌ No GW costs found - not a GW sheaf or costs not stored")
+
 print("\n=== Running Spectral Analysis with NORMALIZED HODGE LAPLACIAN ===")
 
 spectral_analyzer = PersistentSpectralAnalyzer(
-    default_n_steps=30,
+    default_n_steps=50,
     default_filtration_type='threshold'
 )
 '''
@@ -284,7 +554,7 @@ print(print_alpha_flow_results(results))
 results = spectral_analyzer.analyze(
         sheaf,
         filtration_type='threshold',
-        n_steps=30
+        n_steps=50
     )
 
 vf = EnhancedVisualizationFactory(theme='neurosheaf_default')

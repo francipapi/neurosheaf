@@ -598,6 +598,26 @@ class GWRestrictionManager:
                 (source, target), gw_result, quality_score
             )
             
+            # Log detailed edge information for analysis
+            logger.info(f"🔗 EDGE COMPUTED: {source} → {target}")
+            logger.info(f"   GW Cost: {gw_result.cost:.6f}")
+            logger.info(f"   Quality: {gw_result.coupling_quality} (score: {quality_score:.4f})")
+            logger.info(f"   Solver: {gw_result.solver_type}")
+            logger.info(f"   Dimensions: {source_size} → {target_size}")
+            
+            # Warn about high costs
+            if hasattr(self, '_running_cost_sum'):
+                self._running_cost_sum += gw_result.cost
+                self._running_cost_count += 1
+            else:
+                self._running_cost_sum = gw_result.cost
+                self._running_cost_count = 1
+            
+            current_mean = self._running_cost_sum / self._running_cost_count
+            if gw_result.cost > 3.0 * current_mean and self._running_cost_count > 5:
+                logger.warning(f"⚠️  HIGH GW COST DETECTED: {gw_result.cost:.6f} "
+                             f"(mean so far: {current_mean:.6f}, ratio: {gw_result.cost/current_mean:.1f}x)")
+            
             # Return restriction map, GW cost, coupling, and quality score
             return restriction_map, gw_result.cost, gw_result.coupling, quality_score
             

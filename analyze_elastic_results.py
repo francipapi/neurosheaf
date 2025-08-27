@@ -36,10 +36,15 @@ def classify_models(model_names: List[str]) -> Dict[str, List[int]]:
     
     for i, name in enumerate(model_names):
         name_lower = name.lower()
-        if any(x in name_lower for x in ['trained', 'acc']):
-            trained_indices.append(i)
-        elif 'random' in name_lower:
+        
+        if 'random' in name_lower:
             random_indices.append(i)
+        elif any(x in name_lower for x in ['trained', 'acc']):
+            trained_indices.append(i)
+        elif 'mnist' in name_lower and 'random' not in name_lower:
+            # MNIST models without explicit 'trained' or 'acc' are trained models
+            # This handles patterns like tinycnn_mnist1, mlp4layer_mnist_seed42
+            trained_indices.append(i)
         else:
             other_indices.append(i)
     
@@ -60,7 +65,10 @@ def extract_model_info(model_name: str) -> Dict[str, Any]:
         'type': 'unknown',
         'accuracy': None,
         'epochs': None,
-        'architecture': 'unknown'
+        'architecture': 'unknown',
+        'dataset': None,
+        'seed': None,
+        'variant': None
     }
     
     # Extract accuracy
@@ -73,19 +81,46 @@ def extract_model_info(model_name: str) -> Dict[str, Any]:
     if ep_match:
         info['epochs'] = int(ep_match.group(1))
     
+    # Extract seed
+    seed_match = re.search(r'seed(\d+)', name_lower)
+    if seed_match:
+        info['seed'] = int(seed_match.group(1))
+    
+    # Extract variant number (for patterns like mnist1, mnist2, etc.)
+    variant_match = re.search(r'mnist(\d+)', name_lower)
+    if variant_match:
+        info['variant'] = int(variant_match.group(1))
+    
+    # Determine dataset
+    if 'mnist' in name_lower:
+        info['dataset'] = 'mnist'
+    elif 'cifar' in name_lower:
+        info['dataset'] = 'cifar'
+    
     # Determine type
     if 'random' in name_lower:
         info['type'] = 'random'
     elif any(x in name_lower for x in ['trained', 'acc']):
         info['type'] = 'trained'
+    elif 'mnist' in name_lower and 'random' not in name_lower:
+        # MNIST models without explicit 'trained' or 'acc' are trained models
+        info['type'] = 'trained'
     
-    # Architecture
-    if 'custom' in name_lower:
+    # Architecture classification
+    if 'tinycnn' in name_lower:
+        info['architecture'] = 'tinycnn'
+    elif 'mlp4layer' in name_lower:
+        info['architecture'] = 'mlp4layer'
+    elif 'custom' in name_lower:
         info['architecture'] = 'custom'
     elif 'mlp' in name_lower:
         info['architecture'] = 'mlp'
-    elif 'conv' in name_lower:
+    elif any(x in name_lower for x in ['conv', 'cnn']):
         info['architecture'] = 'conv'
+    elif 'resnet' in name_lower:
+        info['architecture'] = 'resnet'
+    elif 'vgg' in name_lower:
+        info['architecture'] = 'vgg'
     
     return info
 

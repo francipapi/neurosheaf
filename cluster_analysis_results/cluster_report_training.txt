@@ -1,0 +1,47 @@
+
+RIGOROUS CLUSTER ANALYSIS REPORT
+===============================
+
+Analysis of elastic distance clustering performance for training labels.
+
+1. INTERNAL CLUSTER QUALITY METRICS
+-----------------------------------
+Silhouette Coefficient:     0.527 [0.423, 0.630]
+Davies-Bouldin Index:       0.929 [0.676, 1.127]
+Calinski-Harabasz Score:    50 [23, 96]
+Dunn Index:                 0.065 [0.065, 0.110]
+Cophenetic Correlation:     0.703 [0.535, 0.792]
+
+2. EXTERNAL VALIDATION METRICS
+-------------------------------
+Adjusted Rand Index:        0.115 [-0.006, 0.268]
+Adjusted Mutual Info:       0.177 [0.051, 0.341]
+Normalized Mutual Info:     0.186 [0.078, 0.344]
+Fowlkes-Mallows Index:      0.628 [0.579, 0.714]
+V-measure:                  0.186 [0.078, 0.344]
+Purity:                     0.675 [0.588, 0.775]
+
+3. HYPOTHESIS TESTS ON SEPARATION
+----------------------------------
+PERMANOVA:                  F = 131.66, p = 0.00e+00, η² = 0.628 (10,000 perms)
+ANOSIM:                     R = 0.310, p = 0.00e+00 (10,000 perms)
+1-NN LOO Accuracy:          0.725, Balanced = 0.725, p = 6.00e-04
+
+4. EFFECT SIZES & SEPARABILITY
+-------------------------------
+Within-Between Gap (Δ):     0.453 [0.281, 0.698]
+Cohen's d:                  0.598
+Cliff's Delta:              0.310
+Margin:                     -2.935
+
+5. ROBUSTNESS & STABILITY
+-------------------------
+Jaccard Stability:          0.394 [0.286, 0.526]
+
+INTERPRETATION
+--------------
+✓ STRONG internal cluster structure (Silhouette > 0.5)
+⚠ WEAK agreement with true labels (ARI < 0.3)
+✓ HIGHLY SIGNIFICANT separation between groups (PERMANOVA p < 0.001)
+⚠ NEGATIVE MARGIN (-2.935): clusters overlap
+⚠ UNSTABLE clustering (Jaccard < 0.6)

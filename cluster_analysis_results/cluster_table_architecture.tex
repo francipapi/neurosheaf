@@ -1,0 +1,35 @@
+
+% Cluster Analysis Results Table for architecture
+\begin{table}[h!]
+\centering
+\caption{Cluster Analysis Results: Architecture Labels}
+\label{tab:cluster_architecture}
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{Internal Quality}} \\
+Silhouette Coefficient & 0.527 & [0.428, 0.627] \\
+Davies-Bouldin Index & 0.929 & [0.679, 1.128] \\
+Calinski-Harabasz & 50 & [25, 93] \\
+Dunn Index & 0.065 & [0.065, 0.110] \\
+Cophenetic Correlation & 0.703 & [0.546, 0.797] \\
+\midrule
+\multicolumn{3}{l}{\textbf{External Validation}} \\
+Adjusted Rand Index & 0.032 & [-0.018, 0.152] \\
+Adjusted Mutual Info & 0.044 & [-0.010, 0.176] \\
+V-measure & 0.054 & [0.001, 0.183] \\
+\midrule
+\multicolumn{3}{l}{\textbf{Hypothesis Tests}} \\
+PERMANOVA F & 87.37 & $p = 4.10e-03$ \\
+ANOSIM R & 0.136 & $p = 1.00e-04$ \\
+\midrule
+\multicolumn{3}{l}{\textbf{Effect Sizes}} \\
+Cohen's $d$ & 0.190 & - \\
+Margin & -2.950 & - \\
+\midrule
+\multicolumn{3}{l}{\textbf{Stability}} \\
+Jaccard Stability & 0.398 & [0.287, 0.532] \\
+\bottomrule
+\end{tabular}
+\end{table}

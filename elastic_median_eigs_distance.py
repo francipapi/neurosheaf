@@ -1,75 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Elastic distance between mean eigenvalue evolution curves.
+Elastic distance between **median** eigenvalue evolution curves.
 
-This script:
-  • Recursively scans a data directory for eigenvalue run files (.npz, .npy).
-  • Loads each run, computes the mean eigenvalue evolution curve (optionally top-k/bottom-k).
-  • Resamples curves to a common grid [0,1] with N points.
-  • Normalizes amplitude (z-score by default) for scale-free comparison.
-  • Converts curves to SRVF (SRSF) representation: q(t) = sign(f') * sqrt(|f'|).
-  • Computes an elastic distance between all pairs via DP warping on SRVFs with a warp penalty.
-  • Parallelizes pairwise distance computation.
-  • Saves the distance matrix (.npy and .csv) and an index file (.json).
-
-The elastic distance here is a practical approximation: we use a DTW-like dynamic program
-on SRVFs under a window constraint, add a penalty for off-diagonal alignment (warp size),
-then measure the L2 distance between q1 and the q2 aligned to q1's grid.
-
-OPTIMAL CONFIGURATION FOR TRAINED/RANDOM SEPARATION:
----------------------------------------------------
-Based on systematic optimization across 150 configurations with expanded parameter space,
-the following parameters provide the best separation between trained and random neural 
-network models (overall score: 0.468):
-
-  --lambda-warp 0.001         # Very low warp penalty for flexible alignment
-  --window-frac 0.3           # Large DTW window for flexible warping  
-  --resample 50               # Low resolution focuses on coarse patterns
-  --smooth-win 14             # Strong smoothing to emphasize broad trends
-  --amp-norm unit             # Unit L2 normalization
-  --outlier-method trajectory_end  # Remove last point from trained TinyCNN models
-  --topk -15                  # KEY: Use bottom 15 eigenvalues (most discriminative!)
-
-This configuration achieves:
-  • Silhouette score: 0.290 (strong cluster separation, 120% improvement)
-  • Davies-Bouldin index: 1.61 (lower is better, 34% improvement)  
-  • Inter/intra distance ratio: 1.66 (higher is better, 39% improvement)
-  • Classification accuracy: 50.0% (using distance-based threshold)
-  • Overall score: 0.468 (14% improvement over previous best)
-
-KEY DISCOVERY: The bottom eigenvalues (smallest values) contain the most discriminative
-information for separating trained from random models. This suggests that the fine-scale
-spectral structure, rather than dominant modes, distinguishes learning dynamics.
-
-For backward compatibility, the script retains default parameters but users seeking
-optimal trained/random separation should use the configuration above.
-
-Usage:
-------
-python elastic_mean_eigs_distance.py --data-dir ./eigenvalueData --pattern "*eigenvalues.npz" \
-    --resample 300 --topk 0 --window-frac 0.2 --lambda-warp 0.05 \
-    --amp-norm zscore --smooth moving --smooth-win 9 \
-    --out-prefix elastic_eigs
-
-Notes on inputs:
-----------------
-Supported file types: .npz, .npy
-  - .npz expected keys (we try in order): ('eigenvalue_matrix','time_vector'), ('E','t'), or fallbacks.
-  - .npy may contain either a dict with those keys, or a 2D array (time x eigen)
-Heuristics try to infer orientation. If no time vector is present we assume uniform in [0,1].
-
-Mean curve:
------------
-If --topk > 0  => per-time-step mean of the top-k eigenvalues
-If --topk < 0  => per-time-step mean of the bottom-k eigenvalues
-If --topk == 0 => mean of all eigenvalues
-
-Outputs:
---------
+This is a drop-in sibling of `elastic_mean_eigs_distance_torus.py`, but it
+uses the per-time-step **median across all eigenvalues** instead of a mean.
+Outputs and CLI remain compatible with the original script:
   {out-prefix}_distance.npy : NxN symmetric matrix of elastic distances (float64)
   {out-prefix}_distance.csv : same in CSV
   {out-prefix}_index.json   : list of file basenames in matrix order
+
+Best-performing defaults (based on experiments you requested):
+  --resample      60
+  --amp-norm      zscore
+  --smooth        moving
+  --smooth-win    7
+  --lambda-warp   0.2
+  --window-frac   0.2
+
+Notes:
+- `--topk` is accepted for compatibility but ignored (we always use the median).
+- Outlier handling for trained TinyCNN runs is preserved (drop last sample).
 """
 
 from __future__ import annotations
@@ -125,20 +76,17 @@ def _load_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
             if arr.ndim == 2:
                 E = arr
             elif arr.ndim == 1:
-                # Single curve; treat as 1 eigenvalue across time
                 E = arr[:, None]
 
         if E is None:
             raise ValueError(f"{path.name}: could not find eigenvalue matrix in keys={keys}")
 
-        # Ensure 2D
         if E.ndim != 2:
             raise ValueError(f"{path.name}: expected 2D eigenvalue matrix, got shape {E.shape}")
 
         # Orientation: prefer (T, K). If K > T, we *guess* E is (K, T) and transpose.
         T, K = E.shape
         if T < K:
-            # Many eigenvectors, fewer time points => probably transposed
             E = E.T
             T, K = E.shape
 
@@ -157,7 +105,6 @@ def _load_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
 
         # Ensure strictly increasing t
         if not np.all(np.diff(t) > 0):
-            # sort by t if needed
             idx = np.argsort(t)
             t = t[idx]
             E = E[idx, :]
@@ -216,70 +163,31 @@ def load_run(path: Path) -> Tuple[np.ndarray, np.ndarray]:
         raise ValueError(f"Unsupported file type: {path}")
 
 
-def remove_tinycnn_outliers(E: np.ndarray, t: np.ndarray, filename: str, 
-                           outlier_method: str = 'none') -> Tuple[np.ndarray, np.ndarray]:
+def remove_tinycnn_outliers(E: np.ndarray, t: np.ndarray, filename: str,
+                            outlier_method: str = 'none') -> Tuple[np.ndarray, np.ndarray]:
     """
     Remove outliers from eigenvalue data, specifically the last point from TRAINED TinyCNN models.
-    
-    Args:
-        E: Eigenvalue matrix (T, K) - time by eigenvalues
-        t: Time vector (T,)
-        filename: Name of the file for identification
-        outlier_method: Method for outlier detection ('none', 'trajectory_end')
-        
-    Returns:
-        Tuple of (cleaned_E, cleaned_t)
+
+    outlier_method:
+        'none'            : do nothing
+        'trajectory_end'  : if filename looks like trained TinyCNN, drop final sample
     """
-    if outlier_method == 'trajectory_end':
-        # Check if this is a TRAINED TinyCNN model (not random)
-        filename_lower = filename.lower()
-        
-        # Identify trained TinyCNN by looking for patterns like:
-        # - tinycnn_mnist1_eigenvalues.npz (trained)
-        # - tinycnn_mnist10_eigenvalues.npz (trained)
-        # But NOT tinycnn_random_001_eigenvalues.npz
-        
-        is_tinycnn = 'tinycnn' in filename_lower
-        is_trained = (
-            is_tinycnn and 
-            'mnist' in filename_lower and
-            'random' not in filename_lower  # Explicitly exclude random models
-        )
-        
-        # Additional check: trained models typically have patterns like 'mnist1', 'mnist2', etc.
-        # Random models have 'random' in the name
-        
-        if is_trained and len(t) > 1:
-            print(f"[INFO] {filename}: Removing last datapoint (trained TinyCNN model)")
-            # Remove last time point from both E and t
-            return E[:-1, :], t[:-1]
-        elif is_tinycnn and 'random' in filename_lower:
-            print(f"[INFO] {filename}: Keeping all points (random TinyCNN model)")
-    
-    # Default: return unchanged
+    if outlier_method != 'trajectory_end':
+        return E, t
+
+    fname = filename.lower()
+    is_tinycnn = ('tinycnn' in fname) and ('random' not in fname)
+    if is_tinycnn and E.shape[0] > 1:
+        E = E[:-1, :]
+        t = t[:-1]
     return E, t
 
 
-def mean_curve(E: np.ndarray, topk: int = 0) -> np.ndarray:
-    """Compute per-time-step mean eigenvalue curve.
-    E shape (T, K). If topk > 0: mean of top-k per row (largest values).
-    If topk < 0: mean of bottom-k per row. If topk == 0: mean across all K.
-    """
+def median_curve(E: np.ndarray) -> np.ndarray:
+    """Per-time-step **median** across eigenvalues. E shape (T, K)."""
     if E.ndim != 2:
         raise ValueError("E must be 2D (T, K)")
-    if topk == 0:
-        return np.mean(E, axis=1)
-    T, K = E.shape
-    k = min(abs(topk), K)
-    # Partial top-k via argpartition (faster than full sort)
-    if topk > 0:
-        idx = np.argpartition(E, K - k, axis=1)[:, K - k:]
-        vals = np.take_along_axis(E, idx, axis=1)
-        return np.mean(vals, axis=1)
-    else:
-        idx = np.argpartition(E, k - 1, axis=1)[:, :k]
-        vals = np.take_along_axis(E, idx, axis=1)
-        return np.mean(vals, axis=1)
+    return np.median(E, axis=1)
 
 
 def resample_to_grid(t: np.ndarray, y: np.ndarray, N: int = 300) -> Tuple[np.ndarray, np.ndarray]:
@@ -288,13 +196,12 @@ def resample_to_grid(t: np.ndarray, y: np.ndarray, N: int = 300) -> Tuple[np.nda
     if t.size != y.size:
         raise ValueError("t and y must have same length")
     t_new = np.linspace(0.0, 1.0, N)
-    # Interpolate to [0,1] by mapping original t to [0,1]
     t01 = (t - t[0]) / (t[-1] - t[0]) if t[-1] > t[0] else np.linspace(0.0, 1.0, t.size)
     y_new = np.interp(t_new, t01, y)
     return t_new, y_new
 
 
-def smooth_series(y: np.ndarray, method: str = 'moving', win: int = 9) -> np.ndarray:
+def smooth_series(y: np.ndarray, method: str = 'moving', win: int = 7) -> np.ndarray:
     if method == 'none' or win <= 1:
         return y
     win = int(win)
@@ -302,7 +209,6 @@ def smooth_series(y: np.ndarray, method: str = 'moving', win: int = 9) -> np.nda
         win += 1
     if win < 3:
         return y
-    # Simple symmetric moving average to avoid requiring SciPy
     pad = win // 2
     ypad = np.pad(y, (pad, pad), mode='edge')
     kernel = np.ones(win, dtype=np.float64) / win
@@ -320,7 +226,6 @@ def normalize_amplitude(y: np.ndarray, mode: str = 'zscore') -> np.ndarray:
             return y * 0.0
         return (y - mu) / sd
     elif mode == 'unit':
-        # Unit L2 norm on [0,1]
         dt = 1.0 / (y.size - 1)
         norm = math.sqrt(np.sum(y * y) * dt)
         if norm < 1e-12:
@@ -336,20 +241,14 @@ def normalize_amplitude(y: np.ndarray, mode: str = 'zscore') -> np.ndarray:
 
 
 def srvf(y: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """Square-root velocity (slope) function for 1D time-series.
-    q(t) = sign(f'(t)) * sqrt(|f'(t)|).
-    """
+    """Square-root velocity function for 1D time-series: q(t) = sign(f') * sqrt(|f'|)."""
     dy = np.gradient(y, 1.0 / (y.size - 1))
     q = np.sign(dy) * np.sqrt(np.abs(dy) + eps)
     return q
 
 
 def _dtw_path(cost: np.ndarray, window: int) -> Tuple[float, List[Tuple[int, int]]]:
-    """Compute minimal-cost DTW path with Sakoe–Chiba window.
-    cost: precomputed local cost matrix (N x N), float64
-    window: int window radius (0..N-1)
-    Returns (total_cost, path list of (i,j) from (0,0) to (N-1,N-1)).
-    """
+    """Minimal-cost DTW path with Sakoe–Chiba window. Returns (total_cost, path)."""
     N = cost.shape[0]
     big = 1e30
     D = np.full((N, N), big, dtype=np.float64)
@@ -362,7 +261,6 @@ def _dtw_path(cost: np.ndarray, window: int) -> Tuple[float, List[Tuple[int, int
         for j in range(jmin, jmax + 1):
             if i == 0 and j == 0:
                 continue
-            # From candidates within window
             best = big
             move = 0
             if i > 0 and j > 0:
@@ -396,7 +294,6 @@ def _dtw_path(cost: np.ndarray, window: int) -> Tuple[float, List[Tuple[int, int
         elif m == 3:
             j -= 1
         else:
-            # Should not happen; safeguard
             if i > 0 and j > 0:
                 i -= 1; j -= 1
             elif i > 0:
@@ -408,22 +305,13 @@ def _dtw_path(cost: np.ndarray, window: int) -> Tuple[float, List[Tuple[int, int
     return D[-1, -1], path
 
 
-def elastic_distance(q1: np.ndarray, q2: np.ndarray, lambda_warp: float = 0.05, window_frac: float = 0.25) -> float:
-    """Approximate elastic distance between SRVFs via DP warping with penalty.
-
-    We construct a local cost:
-        C[i,j] = (q1[i] - q2[j])**2 + lambda_warp * ((i - j)/N)**2
-    and compute the minimal DTW path within a Sakoe–Chiba band (window_frac).
-    After recovering the path, we align q2 to q1's grid and integrate L2 difference.
-
-    Returns: sqrt( ∫ (q1(t) - q2_aligned(t))^2 dt )
-    """
+def elastic_distance(q1: np.ndarray, q2: np.ndarray, lambda_warp: float = 0.2, window_frac: float = 0.2) -> float:
+    """Elastic distance between SRVFs via DP warping with penalty (best defaults baked in)."""
     assert q1.shape == q2.shape
     N = q1.size
     w = max(0, min(N - 1, int(round(window_frac * N))))
-    # Local cost (float32 to save memory, but cast to float64 when accumulating)
     ii = np.arange(N, dtype=np.float64)
-    # Broadcast to form (N,N) without huge copies:
+
     # (q1[i]-q2[j])^2 term
     A = (q1.reshape(-1, 1) - q2.reshape(1, -1))**2
     # warp penalty term
@@ -432,22 +320,17 @@ def elastic_distance(q1: np.ndarray, q2: np.ndarray, lambda_warp: float = 0.05, 
 
     total_cost, path = _dtw_path(C, w)
 
-    # Build q2 aligned to q1 grid via the path (piecewise constant mapping)
-    q2_aligned = np.empty_like(q1)
-    # For each i, average q2[j] of path points that map to i
+    # Align q2 to q1 grid
     from collections import defaultdict
     bucket: Dict[int, List[int]] = defaultdict(list)
     for (i, j) in path:
         bucket[i].append(j)
+    q2_aligned = np.empty_like(q1)
     for i in range(N):
         js = bucket.get(i, None)
-        if not js:
-            # Fallback: nearest j along diagonal
-            q2_aligned[i] = q2[min(N - 1, max(0, i))]
-        else:
-            q2_aligned[i] = np.mean(q2[np.array(js, dtype=int)])
+        q2_aligned[i] = np.mean(q2[np.array(js, dtype=int)]) if js else q2[min(N - 1, max(0, i))]
 
-    # L2 integral on [0,1]
+    # L2 on [0,1]
     diff2 = (q1 - q2_aligned)**2
     dt = 1.0 / (N - 1)
     l2 = math.sqrt(np.sum(diff2) * dt)
@@ -470,7 +353,6 @@ def pairwise_distance_matrix(Q: List[np.ndarray], lambda_warp: float, window_fra
             delayed(_compute)(i, j) for (i, j) in pairs
         )
     else:
-        # Fallback: sequential or simple multiprocessing is possible but we keep it simple
         results = list(map(lambda ij: _compute(*ij), pairs))
 
     for (i, j, d) in results:
@@ -480,23 +362,26 @@ def pairwise_distance_matrix(Q: List[np.ndarray], lambda_warp: float, window_fra
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Elastic distance between mean eigenvalue evolution curves (SRVF + DP warping)")
+    ap = argparse.ArgumentParser(description="Elastic distance between **median** eigenvalue evolution curves (SRVF + DP warping)")
     ap.add_argument('--data-dir', type=str, required=True, help='Directory to scan recursively for data files')
-    ap.add_argument('--pattern', type=str, default='*', help='Glob pattern to match (e.g., "*eigenvalues.npz")')
-    ap.add_argument('--resample', type=int, default=300, help='Number of points in common time grid')
-    ap.add_argument('--topk', type=int, default=0, help='>0: mean of top-k eigs; <0: mean of bottom-k; 0: mean of all')
+    ap.add_argument('--pattern', type=str, default='*eigenvalues.npz', help='Glob pattern to match (e.g., \"*eigenvalues.npz\")')
+    ap.add_argument('--resample', type=int, default=60, help='Number of points in common time grid')
+    ap.add_argument('--topk', type=int, default=0, help='(compat only) ignored: median uses all eigenvalues')
     ap.add_argument('--amp-norm', type=str, default='zscore', choices=['zscore','unit','p95','none'],
-                    help='Amplitude normalization for scale-free comparison')
+                    help='Amplitude normalization mode')
     ap.add_argument('--smooth', type=str, default='moving', choices=['moving','none'], help='Smoothing method')
-    ap.add_argument('--smooth-win', type=int, default=9, help='Window size for smoothing (odd integer)')
-    ap.add_argument('--lambda-warp', type=float, default=0.05, help='Penalty strength for time warping')
-    ap.add_argument('--window-frac', type=float, default=0.1, help='Sakoe–Chiba band as fraction of length')
+    ap.add_argument('--smooth-win', type=int, default=7, help='Window size for smoothing (odd integer)')
+    ap.add_argument('--lambda-warp', type=float, default=0.2, help='Penalty strength for time warping')
+    ap.add_argument('--window-frac', type=float, default=0.2, help='Sakoe–Chiba band as fraction of length')
     ap.add_argument('--n-jobs', type=int, default=-1, help='Parallel jobs (joblib). Use 1 for sequential.')
-    ap.add_argument('--outlier-method', type=str, default='none', 
+    ap.add_argument('--outlier-method', type=str, default='trajectory_end',
                     choices=['none', 'trajectory_end'],
-                    help='Method for outlier detection (trajectory_end removes last point from TRAINED TinyCNN only)')
+                    help='Outlier method (trajectory_end removes last point from TRAINED TinyCNN only)')
     ap.add_argument('--out-prefix', type=str, default='elastic_eigs', help='Prefix for output files')
     args = ap.parse_args()
+
+    if args.topk != 0:
+        print(f"[INFO] --topk={args.topk} provided but ignored: using median across all eigenvalues.")
 
     data_dir = Path(args.data_dir)
     files = _find_files(data_dir, args.pattern)
@@ -515,15 +400,15 @@ def main():
             print(f"[WARN] Skipping {p.name}: {e}")
             continue
 
-        # Apply outlier removal ONLY for trained TinyCNN models
+        # Outlier removal (trained TinyCNN only)
         E, t = remove_tinycnn_outliers(E, t, p.name, outlier_method=args.outlier_method)
 
-        # Continue with rest of pipeline as usual
-        y = mean_curve(E, topk=args.topk)
+        y = median_curve(E)                                 # <-- median instead of mean
         _, y = resample_to_grid(t, y, N=args.resample)
         y = smooth_series(y, method=args.smooth, win=args.smooth_win)
         y = normalize_amplitude(y, mode=args.amp_norm)
         q = srvf(y)
+
         curves.append(y)
         srvfs.append(q)
         index.append(p.name)
@@ -532,20 +417,19 @@ def main():
     if N < 2:
         raise SystemExit("Need at least two valid runs to compute distances.")
 
-    print(f"Computing pairwise elastic distances for N={N} curves (resample={args.resample}, outlier_method={args.outlier_method})...")
+    print(f"Computing pairwise elastic distances for N={N} curves "
+          f"(resample={args.resample}, lambda={args.lambda_warp}, window_frac={args.window_frac})...")
     D = pairwise_distance_matrix(srvfs, lambda_warp=args.lambda_warp,
                                  window_frac=args.window_frac, n_jobs=args.n_jobs)
 
     out_prefix = Path(args.out_prefix)
     np.save(f"{out_prefix}_distance.npy", D)
-    # Save CSV (tab-separated)
-    header = ",".join(index)
     np.savetxt(f"{out_prefix}_distance.csv", D, delimiter=",", fmt="%.6f")
     with open(f"{out_prefix}_index.json", "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
 
-    print(f"Saved distance matrix to {out_prefix}_distance.npy / .csv and indices to {out_prefix}_index.json")
+    print(f"Saved: {out_prefix}_distance.[npy,csv] and {out_prefix}_index.json")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -17,34 +17,6 @@ The elastic distance here is a practical approximation: we use a DTW-like dynami
 on SRVFs under a window constraint, add a penalty for off-diagonal alignment (warp size),
 then measure the L2 distance between q1 and the q2 aligned to q1's grid.
 
-OPTIMAL CONFIGURATION FOR TRAINED/RANDOM SEPARATION:
----------------------------------------------------
-Based on systematic optimization across 150 configurations with expanded parameter space,
-the following parameters provide the best separation between trained and random neural 
-network models (overall score: 0.468):
-
-  --lambda-warp 0.001         # Very low warp penalty for flexible alignment
-  --window-frac 0.3           # Large DTW window for flexible warping  
-  --resample 50               # Low resolution focuses on coarse patterns
-  --smooth-win 14             # Strong smoothing to emphasize broad trends
-  --amp-norm unit             # Unit L2 normalization
-  --outlier-method trajectory_end  # Remove last point from trained TinyCNN models
-  --topk -15                  # KEY: Use bottom 15 eigenvalues (most discriminative!)
-
-This configuration achieves:
-  • Silhouette score: 0.290 (strong cluster separation, 120% improvement)
-  • Davies-Bouldin index: 1.61 (lower is better, 34% improvement)  
-  • Inter/intra distance ratio: 1.66 (higher is better, 39% improvement)
-  • Classification accuracy: 50.0% (using distance-based threshold)
-  • Overall score: 0.468 (14% improvement over previous best)
-
-KEY DISCOVERY: The bottom eigenvalues (smallest values) contain the most discriminative
-information for separating trained from random models. This suggests that the fine-scale
-spectral structure, rather than dominant modes, distinguishes learning dynamics.
-
-For backward compatibility, the script retains default parameters but users seeking
-optimal trained/random separation should use the configuration above.
-
 Usage:
 ------
 python elastic_mean_eigs_distance.py --data-dir ./eigenvalueData --pattern "*eigenvalues.npz" \
