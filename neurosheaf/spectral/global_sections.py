@@ -255,7 +255,7 @@ class GlobalSectionProcessor:
             r = min(nullity + self.cfg.margin, n)
         
         # For memory efficiency, cap at a reasonable maximum if nullity is huge
-        max_svd_compute = min(1000, n)  # Configurable max for safety
+        max_svd_compute = min(self.cfg.max_svd_compute, n)  # Use configurable max for safety
         if r > max_svd_compute:
             logger.warning(f"   Large nullity {nullity}: limiting SVD computation to {max_svd_compute} values")
             r = max_svd_compute

@@ -70,6 +70,7 @@ class H0Config:
     # Algorithm selection thresholds
     sparse_density_threshold: float = 0.1    # Switch to sparse for density < 0.1
     randomized_svd_threshold: int = 10000    # Use randomized SVD for n > threshold
+    max_svd_compute: int = 2000              # Maximum number of singular values to compute for large nullity cases
     
     # SVD numerical rank detection
     svd_zero_tol_scale: float = 10.0        # Multiplier for SVD numerical rank threshold (τ = scale × max(m,n) × ε × σ_max)
@@ -118,6 +119,9 @@ class H0Config:
         
         if not (0.0 < self.mass_floor_factor <= 1e-6):
             raise ValueError(f"mass_floor_factor must be in (0, 1e-6], got {self.mass_floor_factor}")
+            
+        if not (100 <= self.max_svd_compute <= 10000):
+            raise ValueError(f"max_svd_compute must be between 100 and 10000, got {self.max_svd_compute}")
     
     def create_step_thresholds(self, spectral_norm: float, is_normalized: bool = None) -> dict:
         """Create step-specific thresholds based on spectral norm.

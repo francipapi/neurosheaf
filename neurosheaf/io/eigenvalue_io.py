@@ -25,7 +25,7 @@ def save_eigenvalue_evolution(
     """Save eigenvalue evolution results to file.
     
     This function takes the eigenvalue sequences produced by the neurosheaf pipeline
-    and saves them as an eigenvalue matrix (T x n_eigs) and a time vector t of length T.
+    and saves them as an eigenvalue matrix (n_eigs x T) and a time vector t of length T.
     
     Args:
         eigenvalue_sequences: List of eigenvalue tensors from neurosheaf analysis
@@ -61,23 +61,23 @@ def save_eigenvalue_evolution(
     
     logger.debug(f"Using {max_eigenvalues} eigenvalues per time step")
     
-    # Create eigenvalue matrix (T x n_eigs)
+    # Create eigenvalue matrix (n_eigs x T) for proper visualization
     T = len(eigenvalue_sequences)
-    eigenvalue_matrix = np.full((T, max_eigenvalues), np.nan, dtype=np.float64)
+    eigenvalue_matrix = np.full((max_eigenvalues, T), np.nan, dtype=np.float64)
     
     for i, seq in enumerate(eigenvalue_sequences):
         if len(seq) > 0:
             # Convert tensor to numpy and handle dtype
             seq_np = seq.detach().cpu().numpy().astype(np.float64)
             n_eigs = min(len(seq_np), max_eigenvalues)
-            eigenvalue_matrix[i, :n_eigs] = seq_np[:n_eigs]
+            eigenvalue_matrix[:n_eigs, i] = seq_np[:n_eigs]
     
     # Prepare metadata
     save_metadata = {
         'format_version': '1.0',
         'neurosheaf_version': 'current',
-        'n_time_steps': T,
-        'n_eigenvalues': max_eigenvalues,
+        'n_time_steps': T,  # Number of time steps (columns in matrix)
+        'n_eigenvalues': max_eigenvalues,  # Number of eigenvalue tracks (rows in matrix)
         'filtration_range': (float(np.min(time_vector)), float(np.max(time_vector))),
         'eigenvalue_range': (float(np.nanmin(eigenvalue_matrix)), float(np.nanmax(eigenvalue_matrix))),
         'has_missing_eigenvalues': np.any(np.isnan(eigenvalue_matrix))
@@ -170,7 +170,7 @@ def load_eigenvalue_evolution(
         
     Returns:
         Tuple of (eigenvalue_matrix, time_vector, metadata)
-        - eigenvalue_matrix: numpy array of shape (T, n_eigs)
+        - eigenvalue_matrix: numpy array of shape (n_eigs, T)
         - time_vector: numpy array of length T
         - metadata: dictionary with saved metadata (if available)
         
@@ -268,7 +268,7 @@ def convert_eigenvalue_sequences_to_matrix(
         max_eigenvalues: Maximum number of eigenvalues to include
         
     Returns:
-        numpy array of shape (T, n_eigs) with NaN for missing values
+        numpy array of shape (n_eigs, T) with NaN for missing values
     """
     if not eigenvalue_sequences:
         raise ValueError("eigenvalue_sequences cannot be empty")
@@ -279,12 +279,12 @@ def convert_eigenvalue_sequences_to_matrix(
             raise ValueError("All eigenvalue sequences are empty")
     
     T = len(eigenvalue_sequences)
-    matrix = np.full((T, max_eigenvalues), np.nan, dtype=np.float64)
+    matrix = np.full((max_eigenvalues, T), np.nan, dtype=np.float64)
     
     for i, seq in enumerate(eigenvalue_sequences):
         if len(seq) > 0:
             seq_np = seq.detach().cpu().numpy().astype(np.float64)
             n_eigs = min(len(seq_np), max_eigenvalues)
-            matrix[i, :n_eigs] = seq_np[:n_eigs]
+            matrix[:n_eigs, i] = seq_np[:n_eigs]
     
     return matrix

@@ -6,42 +6,42 @@ Analysis of elastic distance clustering performance for architecture labels.
 
 1. INTERNAL CLUSTER QUALITY METRICS
 -----------------------------------
-Silhouette Coefficient:     0.527 [0.428, 0.627]
-Davies-Bouldin Index:       0.929 [0.679, 1.128]
-Calinski-Harabasz Score:    50 [25, 93]
-Dunn Index:                 0.065 [0.065, 0.110]
-Cophenetic Correlation:     0.703 [0.546, 0.797]
+Silhouette Coefficient:     0.680 [0.654, 0.756]
+Davies-Bouldin Index:       0.672 [0.431, 0.812]
+Calinski-Harabasz Score:    109 [69, 189]
+Dunn Index:                 0.430 [0.430, 0.854]
+Cophenetic Correlation:     0.902 [0.872, 0.942]
 
 2. EXTERNAL VALIDATION METRICS
 -------------------------------
-Adjusted Rand Index:        0.032 [-0.018, 0.152]
-Adjusted Mutual Info:       0.044 [-0.010, 0.176]
-Normalized Mutual Info:     0.054 [0.002, 0.185]
-Fowlkes-Mallows Index:      0.592 [0.552, 0.659]
-V-measure:                  0.054 [0.001, 0.183]
-Purity:                     0.600 [0.525, 0.713]
+Adjusted Rand Index:        0.000 [0.000, 0.000]
+Adjusted Mutual Info:       0.000 [0.000, 0.000]
+Normalized Mutual Info:     0.000 [0.000, 0.000]
+Fowlkes-Mallows Index:      0.640 [0.576, 0.745]
+V-measure:                  0.000 [0.000, 0.000]
+Purity:                     1.000 [1.000, 1.000]
 
 3. HYPOTHESIS TESTS ON SEPARATION
 ----------------------------------
-PERMANOVA:                  F = 87.37, p = 4.10e-03, η² = 0.528 (10,000 perms)
-ANOSIM:                     R = 0.136, p = 1.00e-04 (10,000 perms)
-1-NN LOO Accuracy:          0.775, Balanced = 0.775, p = 0.00e+00
+PERMANOVA:                  F = 0.00, p = 1.00e+00, η² = 0.000 (10,000 perms)
+ANOSIM:                     R = 0.000, p = 1.00e+00 (10,000 perms)
+1-NN LOO Accuracy:          1.000, Balanced = 1.000, p = 1.00e+00
 
 4. EFFECT SIZES & SEPARABILITY
 -------------------------------
-Within-Between Gap (Δ):     0.150 [0.024, 0.382]
-Cohen's d:                  0.190
-Cliff's Delta:              0.136
-Margin:                     -2.950
+Within-Between Gap (Δ):     nan [nan, nan]
+Cohen's d:                  0.000
+Cliff's Delta:              nan
+Margin:                     +0.000
 
 5. ROBUSTNESS & STABILITY
 -------------------------
-Jaccard Stability:          0.398 [0.287, 0.532]
+Jaccard Stability:          0.422 [0.260, 0.536]
 
 INTERPRETATION
 --------------
 ✓ STRONG internal cluster structure (Silhouette > 0.5)
 ⚠ WEAK agreement with true labels (ARI < 0.3)
-✓ SIGNIFICANT separation between groups (PERMANOVA p < 0.05)
-⚠ NEGATIVE MARGIN (-2.950): clusters overlap
+⚠ NO significant separation between groups (PERMANOVA p ≥ 0.05)
+⚠ NEGATIVE MARGIN (+0.000): clusters overlap
 ⚠ UNSTABLE clustering (Jaccard < 0.6)

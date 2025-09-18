@@ -2379,7 +2379,7 @@ class PersistentSpectralAnalyzer:
         # Create unified Laplacian computer with appropriate configuration
         unified_computer = UnifiedStaticLaplacian(
             eigenvalue_method='auto',
-            max_eigenvalues=1000,
+            max_eigenvalues=10000,
             enable_gpu=False,
             enable_caching=True,
             use_generalized_normalization=use_normalized  # Enable GW support when needed

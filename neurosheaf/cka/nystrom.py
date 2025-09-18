@@ -197,7 +197,7 @@ class NystromCKA:
         n_samples, n_features = X.shape
         
         # For small matrices, compute rank directly
-        if n_samples <= 1000 and n_features <= 1000:
+        if n_samples <= 2000 and n_features <= 2000:
             try:
                 # Compute full SVD for accurate rank estimation
                 if should_use_cpu_fallback(X.device, 'svd'):
@@ -308,7 +308,7 @@ class NystromCKA:
         
         try:
             # Use randomized SVD for efficiency with large matrices
-            if n_samples > 1000:
+            if n_samples > 2000:
                 # Approximate leverage scores using random sampling
                 sample_size = min(effective_rank * 2, n_samples // 2)
                 random_matrix = torch.randn(X.shape[1], sample_size, device=X.device)
@@ -1042,7 +1042,7 @@ class NystromCKA:
         n_samples = X.shape[0]
         
         # Only compute exact kernels for small datasets
-        if n_samples <= 2000:
+        if n_samples <= 3000:
             try:
                 K_exact = X @ X.T
                 L_exact = Y @ Y.T

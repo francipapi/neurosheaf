@@ -192,8 +192,13 @@ class CustomModel(nn.Module):
         return x
 
 class MLP4x256(nn.Module):
-    def __init__(self, num_layers: int = 10, hidden_dim: int = 32, num_classes: int = 10):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 16, num_classes: int = 10):
         super().__init__()
+        # store config so get_model_info can read it
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+
         dims = [28*28] + [hidden_dim] * num_layers
         layers = []
         for i in range(len(dims) - 1):
@@ -220,43 +225,22 @@ class MLP4x256(nn.Module):
         return self.head(x)
 
 class TinyCNN(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self):
         super().__init__()
-        # Convs (bias not needed with BatchNorm)
-        self.conv1 = nn.Conv2d(1,  4, kernel_size=7, stride=7, padding=0, bias=False)  # 28x28 -> 4x4
-        self.conv2 = nn.Conv2d(4, 16, kernel_size=2, stride=1, padding=0, bias=False)  # 4x4   -> 3x3
-        self.conv3 = nn.Conv2d(16,20, kernel_size=2, stride=1, padding=0, bias=False)  # 3x3   -> 2x2
-        self.conv4 = nn.Conv2d(20,24, kernel_size=2, stride=1, padding=0, bias=False)  # 2x2   -> 1x1
-
-        # BatchNorms
-        self.bn1 = nn.BatchNorm2d(4)
-        self.bn2 = nn.BatchNorm2d(16)
-        self.bn3 = nn.BatchNorm2d(20)
-        self.bn4 = nn.BatchNorm2d(24)
-
-        self.fc  = nn.Linear(24, num_classes)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
+        self.layers = nn.Sequential(
+            # (B, 1, 28, 28)
+            nn.Conv2d(1, 4, kernel_size=5, stride=2, padding=2),   # -> (B, 4, 14, 14)
+            nn.ReLU(inplace=True),
+            nn.Conv2d(4, 8, kernel_size=3, stride=2, padding=1),   # -> (B, 8, 7, 7)
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),                               # -> (B, 8, 1, 1)
+            nn.Flatten(),                                          # -> (B, 8)
+            nn.Linear(8, 10)                                       # -> (B, 10) logits
+        )
 
     def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))  # [B, 4, 4, 4]
-        x = F.relu(self.bn2(self.conv2(x)))  # [B, 16, 3, 3]
-        x = F.relu(self.bn3(self.conv3(x)))  # [B, 20, 2, 2]
-        x = F.relu(self.bn4(self.conv4(x)))  # [B, 24, 1, 1]
-        x = x.view(x.size(0), -1)            # [B, 24]
-        return self.fc(x)                    # logits
-
+        return self.layers(x)
+    
 class Hybrid1DCNN(nn.Module):
     """
     Redesigned Hybrid 1D CNN with aggressive dimension reduction.
@@ -392,22 +376,203 @@ class DeepMLP(nn.Module):
         x = self.backbone(x)
         return self.head(x)
 
+class DigitsFullCNN(nn.Module):
+    def __init__(self, hidden_dim: int = 32, dropout_prob: float = 0.0, num_classes: int = 10):
+        super().__init__()
+        self.layers = nn.Sequential(
+            # Input: (B, 1, 8, 8)
+
+            # Conv backbone (unchanged)
+            nn.Conv2d(1, 10, kernel_size=3, stride=2, padding=1),  # -> (B, 10, 4, 4)
+            nn.BatchNorm2d(10),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(10, 20, kernel_size=3, stride=2, padding=1), # -> (B, 20, 2, 2)
+            nn.BatchNorm2d(20),
+            nn.ReLU(inplace=True),
+
+            nn.AdaptiveAvgPool2d(1),  # -> (B, 20, 1, 1)
+
+            # Small MLP head
+            nn.Flatten(),                          # -> (B, 20)
+            nn.Linear(20, hidden_dim),             # -> (B, hidden_dim)
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob) if dropout_prob > 0 else nn.Identity(),
+            nn.Linear(hidden_dim, num_classes)     # -> (B, num_classes) logits
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+    def forward(self, x):
+        return self.layers(x)
+
+class DigitsMLP(nn.Module):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 16, num_classes: int = 10):
+        super().__init__()
+        # store config so get_model_info can read it
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+
+        # Create sequential architecture: 64 -> hidden_dim -> ... -> hidden_dim -> 10
+        layers = []
+        
+        # Input layer: 64 -> hidden_dim
+        layers.extend([
+            nn.Linear(64, hidden_dim, bias=False),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True)
+        ])
+        
+        # Hidden layers: hidden_dim -> hidden_dim
+        for _ in range(num_layers - 1):
+            layers.extend([
+                nn.Linear(hidden_dim, hidden_dim, bias=False),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True)
+            ])
+        
+        # Output layer: hidden_dim -> num_classes
+        layers.append(nn.Linear(hidden_dim, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)  # Flatten to (batch_size, 64)
+        return self.layers(x)
+
+class Pendigits1DCNN(nn.Module):
+    def __init__(
+        self,
+        conv1_channels: int = 8,        # ↓ from 16
+        conv2_channels: int = 16,       # ↓ from 32
+        kernel_size: int = 3,
+        dropout_prob: float = 0.10,
+        mlp_hidden_dim: int = 24,       # ↓ from 32
+        num_classes: int = 10,
+    ):
+        super().__init__()
+        pad = kernel_size // 2
+
+        # Store config for metadata
+        self.conv1_channels = conv1_channels
+        self.conv2_channels = conv2_channels
+        self.kernel_size = kernel_size
+        self.dropout_prob = dropout_prob
+        self.mlp_hidden_dim = mlp_hidden_dim
+        self.num_classes = num_classes
+
+        # Input: (N, 16)  → reshape to (N, 1, 16)
+        # Conv blocks use GroupNorm(1, C): stable for small batches and on MPS
+        self.layers = nn.Sequential(
+            nn.LayerNorm(16),                       # stabilize inputs (helps MPS)
+            nn.Unflatten(1, (1, 16)),
+
+            nn.Conv1d(1, conv1_channels, kernel_size=kernel_size, padding=pad, bias=False),
+            nn.GroupNorm(1, conv1_channels),
+            nn.ReLU(),
+
+            nn.Conv1d(conv1_channels, conv2_channels, kernel_size=kernel_size, padding=pad, bias=False),
+            nn.GroupNorm(1, conv2_channels),
+            nn.ReLU(),
+
+            nn.AdaptiveAvgPool1d(1),               # → (N, C, 1)
+            nn.Flatten(),                           # → (N, C)
+
+            nn.Dropout(dropout_prob),
+            nn.Linear(conv2_channels, mlp_hidden_dim, bias=True),
+            nn.LayerNorm(mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(mlp_hidden_dim, num_classes),
+        )
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)  # Ensure flattened input (N, 16)
+        return self.layers(x)
+
+class PendigitsMLP(nn.Module):
+    def __init__(self, num_layers: int = 3, hidden_dim: int = 32, 
+                 dropout_prob: float = 0.15, num_classes: int = 10):
+        super().__init__()
+        # Store config for metadata
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.dropout_prob = dropout_prob
+        self.num_classes = num_classes
+
+        # Create MLP architecture: 16 -> 64 -> [64 -> 64] x (num_layers-1) -> 10
+        layers = []
+        
+        # Input layer: 16 -> hidden_dim
+        layers.extend([
+            nn.Linear(16, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob)
+        ])
+        
+        # Hidden layers: hidden_dim -> hidden_dim
+        for _ in range(num_layers - 1):
+            layers.extend([
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout_prob)
+            ])
+        
+        # Output layer: hidden_dim -> num_classes
+        layers.append(nn.Linear(hidden_dim, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)  # Flatten to (batch_size, 16)
+        return self.layers(x)
+
 print("=== Loading Models ===")
 custom_path = "models/custom_trained_acc100_ep200.pth"
-mlp_path = "models/mlp_trained_acc100_ep200.pth"
+mlp_path = "models/mlp_trained_v01_acc1.0000_ep20.pth"
 mlp_path1 = "models/mlp_trained_acc98_ep100.pth"
 rand_custom_path = "models/custom_random_seed42.pth"
 rand_mlp_path = "models/mlp_random_seed42.pth"
-mlp4 = "models/mlp4layer_mnist_seed42.pth"
-mlp4_rand = "models/mnist_mlp_random_001.pth"
-mnist_cnn = "models/tinycnn_mnist20.pth"
+mlp4 = "models/mlp4layer_mnist_seed52.pth"
+mlp4_rand = "models/mnist_mlp_random_042.pth"
+mnist_cnn = "models/tinycnn_mnist1.pth"
 rand_mnist_cnn = "models/tinycnn_random_001.pth"
 adult_cnn = "models/hybrid_cnn_adult.pth"
 adult_mlp = "models/deep_mlp_adult_seed42.pth"
+digit_mlp = "models/digits_mlp_seed49.pth"
+digit_mlp_rand = "models/digits_mlp_random_001.pth"
+digit_cnn = "models/slimcnn_digits_seed60.pth"
+digit_cnn_random = "models/slimcnn_digits_random_001.pth"
+pedigit_cnn = "models/pendigits_cnn_slim_seed65.pth"
+pedigit_mlp = "models/pendigits_mlp_seed45.pth"
 
-model = load_model(Hybrid1DCNN, adult_cnn)
+model = load_model(PendigitsMLP, pedigit_mlp)
+
+batch_size = 1000
 
 # Transform logic (commented out - only needed for MNIST)
+
 '''
 # Apply appropriate transform based on model type
 if isinstance(model, TinyCNN):
@@ -423,11 +588,7 @@ else:
         transforms.Lambda(lambda x: x.view(-1))  # Flatten 28x28 to 784
     ])
     print("Using flattened transform for MLP model")
-'''
 
-batch_size = 1000
-
-'''
 print("Loading MNIST dataset...")
 mnist_test = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 
@@ -438,23 +599,32 @@ data, labels = next(iter(test_loader))
 #data = 10 * torch.randn(self.batch_size, 3)
 print(f"Loaded MNIST data shape: {data.shape}")
 print(f"Labels for first 10 samples: {labels[:10].tolist()}")
-'''
 
+
+data = 12 * torch.rand((batch_size, 3))
 # Generate probe data for Adult dataset (104 features, binary classification)
 print("Generating probe data for Adult dataset...")
 data = torch.randn(batch_size, 104)  # 104 features for Adult dataset
 labels = torch.randint(0, 2, (batch_size,))  # Binary labels (0 or 1)
-
-print(f"Generated Adult probe data shape: {data.shape}")
-print(f"Labels for first 10 samples: {labels[:10].tolist()}")
+'''
+data = torch.rand((batch_size, 1, 16), dtype=torch.float32)
 
 print("\n=== Building Sheaf Using High-Level API ===")
 analyzer = NeurosheafAnalyzer(device='cpu')
+
+# Create improved GW configuration for better convergence
+print("Creating improved GW configuration with increased iterations and float64 precision...")
+improved_gw_config = GWConfig(
+    max_iter=2000,  # Increased from default 1000 for better convergence
+    computation_dtype='float64'  # Use float64 for better numerical precision
+)
+print(f"GW Config: max_iter={improved_gw_config.max_iter}, dtype={improved_gw_config.computation_dtype}")
 
 print("\nRunning analysis WITH layer filtering (exclude final single-output layers):")
 analysis = analyzer.analyze(
     model, data, 
     method='gromov_wasserstein',
+    gw_config=improved_gw_config,  # Pass the improved configuration
     use_normalized_laplacian = False,
     exclude_final_single_output=False  # NEW: Enable layer filtering to reduce degeneracy
 )

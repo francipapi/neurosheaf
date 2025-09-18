@@ -1,0 +1,559 @@
+/opt/anaconda3/envs/myenv/lib/python3.9/site-packages/torchvision/io/image.py:14: UserWarning: Failed to load image Python extension: 'dlopen(/opt/anaconda3/envs/myenv/lib/python3.9/site-packages/torchvision/image.so, 0x0006): Library not loaded: @rpath/libjpeg.9.dylib
+  Referenced from: <FB2FD416-6C4D-3621-B677-61F07C02A3C5> /opt/anaconda3/envs/myenv/lib/python3.9/site-packages/torchvision/image.so
+  Reason: tried: '/opt/anaconda3/envs/myenv/lib/python3.9/site-packages/torchvision/../../../libjpeg.9.dylib' (no such file), '/opt/anaconda3/envs/myenv/lib/python3.9/site-packages/torchvision/../../../libjpeg.9.dylib' (no such file), '/opt/anaconda3/envs/myenv/lib/python3.9/lib-dynload/../../libjpeg.9.dylib' (no such file), '/opt/anaconda3/envs/myenv/bin/../lib/libjpeg.9.dylib' (no such file)'If you don't plan on using image functionality from `torchvision.io`, you can ignore this warning. Otherwise, there might be something wrong with your environment. Did you have `libjpeg` or `libpng` installed before building `torchvision` from source?
+  warn(
+============================================================
+COMPLETE TESTRUN.PY DEPENDENCY TRACING
+============================================================
+
+=== STATIC ANALYSIS OF TESTRUN.PY ===
+
+Direct neurosheaf imports in testrun.py:
+  from neurosheaf.sheaf.core.gw_config import GWConfig
+  from neurosheaf.sheaf.assembly.builder import SheafBuilder
+  from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
+  from neurosheaf.spectral.persistent import AlphaFlowSpec
+  from neurosheaf.spectral.persistent import StaticBuildConfig
+  from neurosheaf.spectral.flows.alpha_flow import AlphaGroupingPolicy
+  from neurosheaf.utils import load_model
+  from neurosheaf.api import NeurosheafAnalyzer
+  from neurosheaf.visualization import EnhancedVisualizationFactory
+  from neurosheaf.spectral.gw.gw_subspace_tracker import GWSubspaceTracker
+  from neurosheaf.spectral.tracker_factory import SubspaceTrackerFactory
+  from neurosheaf.spectral.gw.pes_computation import PESComputer
+  from neurosheaf.sheaf.assembly.builder import SheafBuilder
+  from neurosheaf.spectral.persistent import PersistentSpectralAnalyzer
+  from neurosheaf.utils import load_model
+  from neurosheaf.spectral import UnifiedStaticLaplacian
+  from neurosheaf.io import save_eigenvalue_evolution
+
+=== COMPLETE TRACING OF TESTRUN.PY ===
+Tracing started...
+
+Executing testrun.py with tracing...
+This may take a few minutes...
+  ... 1000 calls traced, depth: 8
+  ... 2000 calls traced, depth: 14
+  ... 3000 calls traced, depth: 7
+  ... 4000 calls traced, depth: 10
+  ... 5000 calls traced, depth: 11
+  ... 6000 calls traced, depth: 7
+  ... 7000 calls traced, depth: 7
+  ... 8000 calls traced, depth: 6
+  ... 9000 calls traced, depth: 4
+  ... 10000 calls traced, depth: 4
+  ... 11000 calls traced, depth: 4
+  ... 12000 calls traced, depth: 4
+  ... 13000 calls traced, depth: 4
+  ... 14000 calls traced, depth: 5
+  ... 15000 calls traced, depth: 9
+  ... 16000 calls traced, depth: 20
+  ... 17000 calls traced, depth: 21
+  ... 18000 calls traced, depth: 17
+  ... 19000 calls traced, depth: 18
+  ... 20000 calls traced, depth: 17
+  ... 21000 calls traced, depth: 18
+  ... 22000 calls traced, depth: 20
+  ... 23000 calls traced, depth: 13
+  ... 24000 calls traced, depth: 6
+  ... 25000 calls traced, depth: 4
+  ... 26000 calls traced, depth: 20
+  ... 27000 calls traced, depth: 14
+  ... 28000 calls traced, depth: 16
+  ... 29000 calls traced, depth: 19
+  ... 30000 calls traced, depth: 27
+  ... 31000 calls traced, depth: 19
+  ... 32000 calls traced, depth: 19
+  ... 33000 calls traced, depth: 20
+  ... 34000 calls traced, depth: 19
+  ... 36000 calls traced, depth: 26
+  ... 37000 calls traced, depth: 22
+  ... 38000 calls traced, depth: 8
+  ... 39000 calls traced, depth: 12
+  ... 40000 calls traced, depth: 11
+  ... 41000 calls traced, depth: 11
+  ... 42000 calls traced, depth: 9
+  ... 43000 calls traced, depth: 13
+=== Loading Models ===
+2025-08-27 15:26:24,000 - neurosheaf.simple_model_loader - INFO - Loading model from models/hybrid_cnn_adult.pth
+2025-08-27 15:26:24,001 - neurosheaf.simple_model_loader - INFO - Model class: Hybrid1DCNN
+2025-08-27 15:26:24,001 - neurosheaf.simple_model_loader - INFO - Device: mps
+2025-08-27 15:26:24,085 - neurosheaf.simple_model_loader - INFO - Successfully loaded model with 19,506 parameters
+Generating probe data for Adult dataset...
+Generated Adult probe data shape: torch.Size([1000, 104])
+Labels for first 10 samples: [1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+
+=== Building Sheaf Using High-Level API ===
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO - ✅ Generalized normalization enabled with GW builder (force_dense=False)
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO - Initial GW Builder Configuration:
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO -   - validate_properties: False
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO -   - force_dense_solver: False
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO -   - use_normalized_laplacian: True
+2025-08-27 15:26:24,087 - neurosheaf.spectral.static_laplacian_unified - INFO - UnifiedStaticLaplacian initialized: auto eigenvalues, max_k=200, GPU=False, caching=False, precision=double
+2025-08-27 15:26:24,088 - neurosheaf.utils.dtw_similarity - INFO - FiltrationDTW initialized: method=dtaidistance, constraint_band=0.05, weights=(1.0, 0.0) - pure functional similarity
+2025-08-27 15:26:24,088 - neurosheaf.spectral.persistent - INFO - PersistentSpectralAnalyzer initialized: default 50 steps, threshold filtration, DTW method: dtaidistance
+2025-08-27 15:26:24,088 - neurosheaf.analyzer - INFO - Initialized NeurosheafAnalyzer on cpu
+2025-08-27 15:26:24,088 - neurosheaf.analyzer - INFO - Mac detected: Apple Silicon = True
+
+Running analysis WITH layer filtering (exclude final single-output layers):
+2025-08-27 15:26:24,088 - neurosheaf.analyzer - INFO - Starting undirected neurosheaf analysis...
+2025-08-27 15:26:24,088 - neurosheaf.analyzer - INFO - Using default GW configuration
+2025-08-27 15:26:24,096 - neurosheaf.analyzer - INFO - Building undirected sheaf using method: gromov_wasserstein
+2025-08-27 15:26:24,236 - neurosheaf.sheaf.extraction.fx_poset - INFO - Building activation-filtered poset from 23 available activations.
+2025-08-27 15:26:24,236 - neurosheaf.sheaf.extraction.fx_poset - INFO - Found 23 nodes with activations, 0 missing.
+2025-08-27 15:26:24,238 - neurosheaf.sheaf.extraction.fx_poset - INFO - Built filtered poset: 23 nodes, 22 edges
+Found 1 zero vectors in activation tensor
+Found 1 zero vectors in activation tensor
+Coupling is very diffuse (entropy ratio: 0.978). Consider decreasing base_epsilon.
+Coupling is very diffuse (entropy ratio: 0.985). Consider decreasing base_epsilon.
+Marginal constraint violation: 1.99e-10
+/opt/anaconda3/envs/myenv/lib/python3.9/site-packages/ot/bregman/_sinkhorn.py:667: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn(
+Marginal constraint violation: 1.35e-04
+Restriction map not perfectly row-stochastic for bn_fc2→relu_5: max deviation = 0.000710, row sums range [0.999580, 1.000710]
+Coupling is very diffuse (entropy ratio: 0.981). Consider decreasing base_epsilon.
+Coupling is very diffuse (entropy ratio: 1.000). Consider decreasing base_epsilon.
+Marginal constraint violation: 8.84e-10
+Marginal constraint violation: 2.68e-10
+Coupling is very diffuse (entropy ratio: 1.000). Consider decreasing base_epsilon.
+Marginal constraint violation: 2.42e-10
+Edge bn1 → relu below quality threshold: 0.0200 < 0.1
+Marginal constraint violation: 5.96e-10
+Marginal constraint violation: 5.82e-10
+Edge conv1 → bn1 below quality threshold: 0.0200 < 0.1
+Marginal constraint violation: 6.06e-10
+Marginal constraint violation: 7.03e-10
+Coupling is very diffuse (entropy ratio: 0.998). Consider decreasing base_epsilon.
+⚠️  HIGH GW COST DETECTED: 0.776885 (mean so far: 0.231493, ratio: 3.4x)
+Coupling is very diffuse (entropy ratio: 1.000). Consider decreasing base_epsilon.
+Coupling is very diffuse (entropy ratio: 0.975). Consider decreasing base_epsilon.
+Coupling is very diffuse (entropy ratio: 0.980). Consider decreasing base_epsilon.
+Marginal constraint violation: 1.92e-06
+Coupling is very diffuse (entropy ratio: 0.969). Consider decreasing base_epsilon.
+Marginal constraint violation: 3.62e-10
+Coupling is very diffuse (entropy ratio: 1.000). Consider decreasing base_epsilon.
+Edge relu_5 → head below quality threshold: 0.0200 < 0.1
+Marginal constraint violation: 4.08e-10
+Coupling is very diffuse (entropy ratio: 0.983). Consider decreasing base_epsilon.
+
+Quality issues detected in 3/22 edges:
+  bn1 → relu: Quality threshold not met or strict mode failure
+  conv1 → bn1: Quality threshold not met or strict mode failure
+  relu_5 → head: Quality threshold not met or strict mode failure
+Maximum stochasticity error: 0.000710
+Maximum stochasticity error: 0.000710
+Found 1 zero unit vectors in relu_1, adding small noise
+Found 1 zero unit vectors in relu_4, adding small noise
+Found 1 zero unit vectors in dropout1, adding small noise
+  ... 44000 calls traced, depth: 10
+2025-08-27 15:26:27,260 - neurosheaf.analyzer - INFO - Undirected analysis completed in 3.164s
+
+=== Filtered Sheaf Details ===
+
+================================================================================
+SHEAF DETAILED SUMMARY
+================================================================================
+
+1. BASIC STRUCTURE:
+----------------------------------------
+  Nodes: 23
+  Edges: 22
+  Total Laplacian dimension: 7330
+  Sparsity: 92.1%
+  Construction method: gromov_wasserstein
+  Validation: ✗
+  Whitened coordinates: No
+
+2. GRAPH STRUCTURE:
+----------------------------------------
+  Layer distribution:
+    bn: 2 nodes
+    global: 1 nodes
+    relu: 5 nodes
+  Longest path: 22 edges
+
+3. STALK METRICS:
+----------------------------------------
+  Total stalks: 23
+  Identity stalks: 0/23
+  Norm range: [1.992230, 278.464661]
+  Mean norm: 91.922044 (std: 75.017736)
+  Rank range: [2, 615]
+
+  First few stalks:
+    bn1: shape=(832, 832), norm=88.5440, rank=105, identity=False
+    bn2: shape=(416, 416), norm=107.2902, rank=350, identity=False
+    bn3: shape=(624, 624), norm=172.3601, rank=380, identity=False
+    bn4: shape=(256, 256), norm=91.5508, rank=237, identity=False
+    bn_fc1: shape=(32, 32), norm=22.1743, rank=32, identity=False
+    bn_fc2: shape=(16, 16), norm=11.7116, rank=16, identity=False
+    conv1: shape=(832, 832), norm=88.4872, rank=104, identity=False
+    conv2: shape=(416, 416), norm=134.3006, rank=337, identity=False
+    conv3: shape=(624, 624), norm=193.0092, rank=371, identity=False
+    conv4: shape=(256, 256), norm=106.6709, rank=232, identity=False
+    dropout1: shape=(32, 32), norm=12.6695, rank=32, identity=False
+    fc1: shape=(32, 32), norm=22.8032, rank=32, identity=False
+    fc2: shape=(16, 16), norm=11.7525, rank=16, identity=False
+    global_avg_pool: shape=(64, 64), norm=39.3613, rank=64, identity=False
+    head: shape=(2, 2), norm=1.9922, rank=2, identity=False
+    pool1: shape=(416, 416), norm=217.0806, rank=404, identity=False
+    pool2: shape=(288, 288), norm=119.5557, rank=288, identity=False
+    relu: shape=(832, 832), norm=278.4647, rank=561, identity=False
+    relu_1: shape=(416, 416), norm=115.1545, rank=416, identity=False
+    relu_2: shape=(624, 624), norm=168.6384, rank=615, identity=False
+    relu_3: shape=(256, 256), norm=89.1092, rank=256, identity=False
+    relu_4: shape=(32, 32), norm=12.6735, rank=32, identity=False
+    relu_5: shape=(16, 16), norm=8.8530, rank=16, identity=False
+
+  Restrictions between displayed stalks:
+    bn2[416] → relu_1[416]:
+      Restriction shape: (416, 416) (norm=1.1698)
+      Dimensional flow: (416, 416) → (416, 416) → (416, 416) ✓
+    bn3[624] → relu_2[624]:
+      Restriction shape: (624, 624) (norm=1.2296)
+      Dimensional flow: (624, 624) → (624, 624) → (624, 624) ✓
+    bn4[256] → relu_3[256]:
+      Restriction shape: (256, 256) (norm=1.2041)
+      Dimensional flow: (256, 256) → (256, 256) → (256, 256) ✓
+    bn_fc1[32] → relu_4[32]:
+      Restriction shape: (32, 32) (norm=1.5532)
+      Dimensional flow: (32, 32) → (32, 32) → (32, 32) ✓
+    bn_fc2[16] → relu_5[16]:
+      Restriction shape: (16, 16) (norm=2.1024)
+      Dimensional flow: (16, 16) → (16, 16) → (16, 16) ✓
+    conv2[416] → bn2[416]:
+      Restriction shape: (416, 416) (norm=1.6633)
+      Dimensional flow: (416, 416) → (416, 416) → (416, 416) ✓
+    conv3[624] → bn3[624]:
+      Restriction shape: (624, 624) (norm=1.6771)
+      Dimensional flow: (624, 624) → (624, 624) → (624, 624) ✓
+    conv4[256] → bn4[256]:
+      Restriction shape: (256, 256) (norm=1.8320)
+      Dimensional flow: (256, 256) → (256, 256) → (256, 256) ✓
+    dropout1[32] → fc2[16]:
+      Restriction shape: (16, 32) (norm=1.1985)
+      Dimensional flow: (32, 32) → (16, 32) → (16, 16) ✓
+    fc1[32] → bn_fc1[32]:
+      Restriction shape: (32, 32) (norm=2.3405)
+      Dimensional flow: (32, 32) → (32, 32) → (32, 32) ✓
+    fc2[16] → bn_fc2[16]:
+      Restriction shape: (16, 16) (norm=2.0379)
+      Dimensional flow: (16, 16) → (16, 16) → (16, 16) ✓
+    global_avg_pool[64] → fc1[32]:
+      Restriction shape: (32, 64) (norm=0.9733)
+      Dimensional flow: (64, 64) → (32, 64) → (32, 32) ✓
+    pool1[416] → conv2[416]:
+      Restriction shape: (416, 416) (norm=1.0215)
+      Dimensional flow: (416, 416) → (416, 416) → (416, 416) ✓
+    pool2[288] → conv4[256]:
+      Restriction shape: (256, 288) (norm=1.1646)
+      Dimensional flow: (288, 288) → (256, 288) → (256, 256) ✓
+    relu[832] → pool1[416]:
+      Restriction shape: (416, 832) (norm=0.7074)
+      Dimensional flow: (832, 832) → (416, 832) → (416, 416) ✓
+    relu_1[416] → conv3[624]:
+      Restriction shape: (624, 416) (norm=1.5067)
+      Dimensional flow: (416, 416) → (624, 416) → (624, 624) ✓
+    relu_2[624] → pool2[288]:
+      Restriction shape: (288, 624) (norm=0.8195)
+      Dimensional flow: (624, 624) → (288, 624) → (288, 288) ✓
+    relu_3[256] → global_avg_pool[64]:
+      Restriction shape: (64, 256) (norm=0.6446)
+      Dimensional flow: (256, 256) → (64, 256) → (64, 64) ✓
+    relu_4[32] → dropout1[32]:
+      Restriction shape: (32, 32) (norm=1.5836)
+      Dimensional flow: (32, 32) → (32, 32) → (32, 32) ✓
+
+4. RESTRICTION MAP METRICS:
+----------------------------------------
+  Total restrictions: 19
+  Weight range: [0.644630, 2.340534]
+  Mean weight: 1.391042 (std: 0.465314)
+  Condition number range: [1.44e+03, 2.98e+09]
+  Rank distribution: min=14, max=526, mean=126.2
+  Average sparsity: 10.3%
+
+  Restrictions by layer order:
+
+    From bn2:
+      bn2[416] → relu_1[416]:
+        Restriction: shape=(416, 416), weight=1.1698, rank=141, sparsity=0.0%
+
+    From bn3:
+      bn3[624] → relu_2[624]:
+        Restriction: shape=(624, 624), weight=1.2296, rank=157, sparsity=0.0%
+
+    From bn4:
+      bn4[256] → relu_3[256]:
+        Restriction: shape=(256, 256), weight=1.2041, rank=165, sparsity=0.0%
+
+    From bn:
+      bn_fc1[32] → relu_4[32]:
+        Restriction: shape=(32, 32), weight=1.5532, rank=32, sparsity=16.3%
+      bn_fc2[16] → relu_5[16]:
+        Restriction: shape=(16, 16), weight=2.1024, rank=16, sparsity=32.0%
+
+    From conv2:
+      conv2[416] → bn2[416]:
+        Restriction: shape=(416, 416), weight=1.6633, rank=399, sparsity=6.1%
+
+    From conv3:
+      conv3[624] → bn3[624]:
+        Restriction: shape=(624, 624), weight=1.6771, rank=526, sparsity=6.0%
+
+    From conv4:
+      conv4[256] → bn4[256]:
+        Restriction: shape=(256, 256), weight=1.8320, rank=256, sparsity=23.4%
+
+    From dropout1:
+      dropout1[32] → fc2[16]:
+        Restriction: shape=(16, 32), weight=1.1985, rank=16, sparsity=16.2%
+
+    From fc1:
+      fc1[32] → bn_fc1[32]:
+        Restriction: shape=(32, 32), weight=2.3405, rank=32, sparsity=48.6%
+
+    From fc2:
+      fc2[16] → bn_fc2[16]:
+        Restriction: shape=(16, 16), weight=2.0379, rank=16, sparsity=46.9%
+
+    From global:
+      global_avg_pool[64] → fc1[32]:
+        Restriction: shape=(32, 64), weight=0.9733, rank=32, sparsity=0.0%
+
+    From pool1:
+      pool1[416] → conv2[416]:
+        Restriction: shape=(416, 416), weight=1.0215, rank=43, sparsity=0.0%
+
+    From pool2:
+      pool2[288] → conv4[256]:
+        Restriction: shape=(256, 288), weight=1.1646, rank=159, sparsity=0.0%
+
+    From relu:
+      relu[832] → pool1[416]:
+        Restriction: shape=(416, 832), weight=0.7074, rank=14, sparsity=0.0%
+      relu_1[416] → conv3[624]:
+        Restriction: shape=(624, 416), weight=1.5067, rank=176, sparsity=0.0%
+      relu_2[624] → pool2[288]:
+        Restriction: shape=(288, 624), weight=0.8195, rank=121, sparsity=0.0%
+      relu_3[256] → global_avg_pool[64]:
+        Restriction: shape=(64, 256), weight=0.6446, rank=64, sparsity=0.0%
+      relu_4[32] → dropout1[32]:
+        Restriction: shape=(32, 32), weight=1.5836, rank=32, sparsity=0.0%
+
+5. GROMOV-WASSERSTEIN COSTS:
+----------------------------------------
+  GW cost range: [0.032789, 0.776885]
+  GW cost mean: 0.189699
+  GW cost std: 0.193362
+
+  Top 5 highest GW costs:
+    1. global_avg_pool → fc1: 0.776885
+    2. dropout1 → fc2: 0.402086
+    3. bn_fc1 → relu_4: 0.391645
+    4. bn_fc2 → relu_5: 0.384695
+    5. pool1 → conv2: 0.330582
+  ⚠️  Cost outliers (>mean+2σ): 1 edges
+      Outlier threshold: 0.576423
+
+6. SPECIAL METADATA:
+----------------------------------------
+  Eigenvalue preservation: NOT CONFIGURED
+  (Note: preserve_eigenvalues=False found in metadata)
+
+7. DISTINGUISHING FEATURES:
+----------------------------------------
+  Fingerprint hash: 1734
+  Identity fraction: 0.0%
+  Weight heterogeneity: 0.335
+  Dimension per node: 318.7
+
+================================================================================
+
+=== GW COST ANALYSIS ===
+============================================================
+Total edges: 19
+GW cost range: [0.032789, 0.776885]
+GW cost mean: 0.189699
+GW cost std: 0.193362
+
+🔍 HIGHEST GW COSTS (Top 10):
+------------------------------------------------------------
+   1. global_avg_pool → fc1
+      GW Cost: 0.776885 ⚠️ OUTLIER
+   2. dropout1 → fc2
+      GW Cost: 0.402086 
+   3. bn_fc1 → relu_4
+      GW Cost: 0.391645 
+   4. bn_fc2 → relu_5
+      GW Cost: 0.384695 
+   5. pool1 → conv2
+      GW Cost: 0.330582 
+   6. pool2 → conv4
+      GW Cost: 0.318929 
+   7. bn4 → relu_3
+      GW Cost: 0.230000 
+   8. relu_1 → conv3
+      GW Cost: 0.123214 
+   9. relu_3 → global_avg_pool
+      GW Cost: 0.110588 
+  10. bn2 → relu_1
+      GW Cost: 0.109750 
+
+🚨 MOST PROBLEMATIC EDGE: global_avg_pool → fc1
+   GW Cost: 0.776885
+   Cost ratio (worst/mean): 4.10x
+
+📊 LAYER TYPE ANALYSIS:
+----------------------------------------
+  global → fc1: avg=0.7769, max=0.7769, count=1
+  dropout1 → fc2: avg=0.4021, max=0.4021, count=1
+  bn → relu: avg=0.3882, max=0.3916, count=2
+  pool1 → conv2: avg=0.3306, max=0.3306, count=1
+  pool2 → conv4: avg=0.3189, max=0.3189, count=1
+  bn4 → relu: avg=0.2300, max=0.2300, count=1
+  relu → conv3: avg=0.1232, max=0.1232, count=1
+  relu → global: avg=0.1106, max=0.1106, count=1
+  bn2 → relu: avg=0.1097, max=0.1097, count=1
+  bn3 → relu: avg=0.1049, max=0.1049, count=1
+  relu → dropout1: avg=0.0514, max=0.0514, count=1
+  relu → pool2: avg=0.0456, max=0.0456, count=1
+  relu → pool1: avg=0.0428, max=0.0428, count=1
+  conv2 → bn2: avg=0.0390, max=0.0390, count=1
+  conv4 → bn4: avg=0.0388, max=0.0388, count=1
+  conv3 → bn3: avg=0.0358, max=0.0358, count=1
+  fc1 → bn: avg=0.0348, max=0.0348, count=1
+  fc2 → bn: avg=0.0328, max=0.0328, count=1
+
+=== Running Spectral Analysis with NORMALIZED HODGE LAPLACIAN ===
+2025-08-27 15:26:28,538 - neurosheaf.spectral.static_laplacian_unified - INFO - ✅ Generalized normalization enabled with GW builder (force_dense=False)
+2025-08-27 15:26:28,538 - neurosheaf.spectral.static_laplacian_unified - INFO - Initial GW Builder Configuration:
+2025-08-27 15:26:28,538 - neurosheaf.spectral.static_laplacian_unified - INFO -   - validate_properties: False
+2025-08-27 15:26:28,538 - neurosheaf.spectral.static_laplacian_unified - INFO -   - force_dense_solver: False
+2025-08-27 15:26:28,538 - neurosheaf.spectral.static_laplacian_unified - INFO -   - use_normalized_laplacian: True
+2025-08-27 15:26:28,539 - neurosheaf.spectral.static_laplacian_unified - INFO - UnifiedStaticLaplacian initialized: auto eigenvalues, max_k=200, GPU=False, caching=False, precision=double
+2025-08-27 15:26:28,539 - neurosheaf.utils.dtw_similarity - INFO - FiltrationDTW initialized: method=dtaidistance, constraint_band=0.05, weights=(1.0, 0.0) - pure functional similarity
+2025-08-27 15:26:28,539 - neurosheaf.spectral.persistent - INFO - PersistentSpectralAnalyzer initialized: default 50 steps, threshold filtration, DTW method: dtaidistance
+2025-08-27 15:26:28,539 - neurosheaf.spectral.persistent - INFO - Starting persistent spectral analysis: gromov_wasserstein construction, threshold filtration, 50 steps
+2025-08-27 15:26:28,539 - neurosheaf.spectral.persistent - INFO - Routing to H⁰ Global Section persistence for GW sheaf
+2025-08-27 15:26:28,539 - neurosheaf.spectral.persistent - INFO - Starting H⁰ Global Section analysis: 50 steps, dtype=float64
+2025-08-27 15:26:28,539 - neurosheaf.spectral.persistent - INFO - Generating edge-aware GW filtration parameters (plateau prevention)
+2025-08-27 15:26:28,540 - neurosheaf.spectral.persistent - INFO - Extracted 19 GW costs: range [0.032789, 0.776885]
+2025-08-27 15:26:28,540 - neurosheaf.spectral.persistent - INFO - 🔧 COORDINATION FIX: Limiting steps from 50 to 20 to match 19 available edges (19 unique costs)
+2025-08-27 15:26:28,540 - neurosheaf.spectral.persistent - INFO - Adjusted steps from 50 to 20 for optimal edge activation
+2025-08-27 15:26:28,540 - neurosheaf.spectral.persistent - INFO - Using edge-aware parameter range: [0.032789, 0.776885] (tightly bound to actual costs)
+2025-08-27 15:26:28,542 - neurosheaf.spectral.persistent - INFO - Filtration quality validation: 0.0% plateau ratio ✓
+  ... 45000 calls traced, depth: 8
+2025-08-27 15:26:28,544 - neurosheaf.spectral.persistent - INFO - Generated 20 edge-aware filtration parameters:
+2025-08-27 15:26:28,544 - neurosheaf.spectral.persistent - INFO -   Parameter range: [0.032789, 0.776885]
+2025-08-27 15:26:28,544 - neurosheaf.spectral.persistent - INFO -   Edge activation: 0 → 19 edges
+2025-08-27 15:26:28,544 - neurosheaf.spectral.persistent - INFO -   Plateau ratio: 0.0% (target: <30%)
+2025-08-27 15:26:28,545 - neurosheaf.spectral.persistent - INFO -   Unique costs: 19, Steps: 20
+2025-08-27 15:26:28,549 - neurosheaf.spectral.persistent - INFO - Prepared 20 GW filtration steps
+2025-08-27 15:26:28,549 - neurosheaf.spectral.persistent - INFO - Created new GW Laplacian builder (normalized: False)
+2025-08-27 15:26:28,549 - neurosheaf.spectral.h0_persistence - INFO - H⁰ Persistence Tracker initialized:
+2025-08-27 15:26:28,549 - neurosheaf.spectral.h0_persistence - INFO -    Certificate validation: enabled
+2025-08-27 15:26:28,549 - neurosheaf.spectral.h0_persistence - INFO -    Neural network threshold: disabled
+2025-08-27 15:26:28,549 - neurosheaf.spectral.h0_persistence - INFO -    RRQR parameters: c_keep=200.0, gap=2.0
+2025-08-27 15:26:28,552 - neurosheaf.spectral.utils_numerical - INFO - Deterministic execution enabled with seed 123
+2025-08-27 15:26:28,552 - neurosheaf.spectral.global_sections - INFO - GlobalSectionProcessor initialized: dtype=float64, c_in=100.0, c_keep=200.0, deterministic=True
+2025-08-27 15:26:28,552 - neurosheaf.spectral.transport - INFO - GWTransportProcessor initialized: mass_floor_factor=1e-12, transport_noise_threshold=0.1
+2025-08-27 15:26:28,552 - neurosheaf.spectral.h0_persistence - INFO - H0PersistenceTracker initialized: confirm_steps=2, c_keep=200.0
+2025-08-27 15:26:28,552 - neurosheaf.spectral.h0_persistence - INFO - 🚀 STARTING H⁰ PERSISTENCE PIPELINE: 20 steps
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO -    Configuration: dtype=float64, deterministic=True
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO -    Numerical parameters: c_in=100.0, c_keep=200.0, gap=2.0
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO -    Machine precision: √ε = 1.49e-08
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO - 
+📈 PROCESSING STEP 0: param=0.03278938109558414
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO -    Computation precision: float64
+2025-08-27 15:26:28,553 - neurosheaf.spectral.h0_persistence - INFO -    √ε = 1.49e-08, c_in = 100.0, c_keep = 200.0
+2025-08-27 15:26:28,579 - neurosheaf.spectral.h0_persistence - INFO -    📊 FIBER DIMENSIONS:
+2025-08-27 15:26:28,580 - neurosheaf.spectral.h0_persistence - INFO -       Node fibers (0-cochains): 0
+2025-08-27 15:26:28,580 - neurosheaf.spectral.h0_persistence - INFO -       Edge fibers (1-cochains): 0
+2025-08-27 15:26:29,058 - neurosheaf.spectral.global_sections - INFO - 🔄 Empty coboundary δ = 0: kernel is entire stalk space
+2025-08-27 15:26:29,076 - neurosheaf.spectral.global_sections - INFO - 🔄 Full stalk kernel: dimension = 7330 (entire stalk space)
+2025-08-27 15:26:29,115 - neurosheaf.spectral.h0_persistence - INFO -    🎆 First step: Created 7330 initial generators
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO - 📝 Step 0: Initialized with 7330 generators, Q_current shape: torch.Size([7330, 7330])
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO - 🔍 DIMENSION ANALYSIS Step 0:
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO -    Kernel dimension: 7330
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO -    Active generators: 7330
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO -    Spectral norm ||δ̃||₂: 0.00e+00
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO -    Thresholds: τ_in=0.00e+00, τ_out=0.00e+00
+2025-08-27 15:26:29,116 - neurosheaf.spectral.h0_persistence - INFO -    Kernel residual: 0.00e+00
+2025-08-27 15:26:31,330 - neurosheaf.spectral.h0_persistence - INFO -    Q_current shape: torch.Size([7330, 7330])
+2025-08-27 15:26:31,330 - neurosheaf.spectral.h0_persistence - INFO -    Spectral norm: 0.00e+00
+2025-08-27 15:26:31,330 - neurosheaf.spectral.h0_persistence - INFO -    Smallest 3 singular values: [0. 0. 0.]
+2025-08-27 15:26:33,534 - neurosheaf.spectral.h0_persistence - INFO - 
+📈 PROCESSING STEP 1: param=0.03278939209558414
+2025-08-27 15:26:33,534 - neurosheaf.spectral.h0_persistence - INFO -    Computation precision: float64
+2025-08-27 15:26:33,534 - neurosheaf.spectral.h0_persistence - INFO -    √ε = 1.49e-08, c_in = 100.0, c_keep = 200.0
+2025-08-27 15:26:33,560 - neurosheaf.spectral.h0_persistence - INFO -    📊 FIBER DIMENSIONS:
+2025-08-27 15:26:33,560 - neurosheaf.spectral.h0_persistence - INFO -       Node fibers (0-cochains): 7330
+2025-08-27 15:26:33,560 - neurosheaf.spectral.h0_persistence - INFO -       Edge fibers (1-cochains): 16
+2025-08-27 15:26:34,079 - neurosheaf.spectral.global_sections - INFO - 🔍 KERNEL COMPUTATION DIAGNOSTICS:
+2025-08-27 15:26:34,079 - neurosheaf.spectral.global_sections - INFO -    Spectral norm ||δ̃||₂ = 1.80e+01
+2025-08-27 15:26:34,079 - neurosheaf.spectral.global_sections - INFO -    τ_in = 2.68e-05 (c_in=100.0 × √ε × ||δ̃||₂)
+2025-08-27 15:26:34,079 - neurosheaf.spectral.global_sections - INFO -    τ_out = 5.37e-05 (gap=2.0 × τ_in)
+2025-08-27 15:26:34,079 - neurosheaf.spectral.global_sections - INFO -    sqrt_eps = 1.49e-08
+2025-08-27 15:26:34,083 - neurosheaf.spectral.global_sections - INFO -    Matrix dimensions: 16×7330 (16 edges)
+2025-08-27 15:26:34,083 - neurosheaf.spectral.global_sections - INFO -    Numerical rank: 16 (threshold=2.96e-10)
+2025-08-27 15:26:34,083 - neurosheaf.spectral.global_sections - INFO -    Expected nullity: 7314 (n - rank)
+2025-08-27 15:26:34,083 - neurosheaf.spectral.global_sections - WARNING -    Large nullity 7314: limiting SVD computation to 1000 values
+2025-08-27 15:26:34,236 - neurosheaf.spectral.global_sections - INFO -    Computing 1000 smallest singular values for matrix torch.Size([16, 7330])
+2025-08-27 15:26:34,263 - neurosheaf.spectral.global_sections - INFO -    Raw singular values: [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.
+ 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+2025-08-27 15:26:34,263 - neurosheaf.spectral.global_sections - INFO -    Smallest σ = 0.00e+00, Largest σ = 0.00e+00
+2025-08-27 15:26:34,264 - neurosheaf.spectral.global_sections - INFO -    σ_min/σ_max ratio = undefined (σ_max = 0)
+2025-08-27 15:26:34,267 - neurosheaf.spectral.global_sections - INFO -    🏷️  SINGULAR VALUES: σ_0..σ_2 = [0.00e+00, 0.00e+00, 0.00e+00], σ_997..σ_999 = [0.00e+00, 0.00e+00, 0.00e+00]
+2025-08-27 15:26:34,267 - neurosheaf.spectral.global_sections - INFO -    📊 CLASSIFICATION SUMMARY:
+2025-08-27 15:26:34,267 - neurosheaf.spectral.global_sections - INFO -       ZERO labels: 1000 → kernel dim = 1000
+2025-08-27 15:26:34,267 - neurosheaf.spectral.global_sections - INFO -       NONZERO labels: 0
+2025-08-27 15:26:34,267 - neurosheaf.spectral.global_sections - INFO -    ✅ GLOBAL SECTIONS DETECTED! dim = 1000
+2025-08-27 15:26:34,510 - neurosheaf.spectral.h0_persistence - INFO - 🔄 Step 1: Building transport for CPQR death detection
+2025-08-27 15:26:34,511 - neurosheaf.spectral.transport - INFO - GWTransportProcessor initialized: mass_floor_factor=1e-12, transport_noise_threshold=0.1
+2025-08-27 15:26:34,511 - neurosheaf.spectral.transport - INFO - 🔧 Constructing H⁰ transport: dim=7330, step_tp1=1
+2025-08-27 15:27:08,806 - neurosheaf.spectral.transport - INFO - 🎯 Step 1: Applied 1 constraints
+2025-08-27 15:27:08,806 - neurosheaf.spectral.transport - INFO -    Constraint scale: 0.995
+2025-08-27 15:27:08,806 - neurosheaf.spectral.transport - INFO -    Constraint effect: 0.995000
+2025-08-27 15:27:08,807 - neurosheaf.spectral.transport - INFO -    RRQR standard threshold estimate: 2.98e-06
+2025-08-27 15:27:08,807 - neurosheaf.spectral.transport - INFO -    Effect/Threshold ratio: 333893× (should be >>1)

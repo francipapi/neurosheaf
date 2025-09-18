@@ -6,42 +6,42 @@ Analysis of elastic distance clustering performance for combined labels.
 
 1. INTERNAL CLUSTER QUALITY METRICS
 -----------------------------------
-Silhouette Coefficient:     0.527 [0.421, 0.631]
-Davies-Bouldin Index:       0.929 [0.679, 1.134]
-Calinski-Harabasz Score:    50 [26, 95]
-Dunn Index:                 0.065 [0.065, 0.110]
-Cophenetic Correlation:     0.703 [0.537, 0.800]
+Silhouette Coefficient:     0.680 [0.649, 0.753]
+Davies-Bouldin Index:       0.672 [0.428, 0.828]
+Calinski-Harabasz Score:    109 [67, 205]
+Dunn Index:                 0.430 [0.430, 0.853]
+Cophenetic Correlation:     0.902 [0.873, 0.943]
 
 2. EXTERNAL VALIDATION METRICS
 -------------------------------
-Adjusted Rand Index:        0.069 [0.013, 0.167]
-Adjusted Mutual Info:       0.145 [0.069, 0.269]
-Normalized Mutual Info:     0.163 [0.091, 0.287]
-Fowlkes-Mallows Index:      0.454 [0.421, 0.522]
-V-measure:                  0.163 [0.092, 0.294]
-Purity:                     0.388 [0.350, 0.500]
+Adjusted Rand Index:        0.534 [0.284, 0.820]
+Adjusted Mutual Info:       0.551 [0.378, 0.811]
+Normalized Mutual Info:     0.566 [0.398, 0.811]
+Fowlkes-Mallows Index:      0.744 [0.600, 0.906]
+V-measure:                  0.566 [0.405, 0.808]
+Purity:                     0.925 [0.850, 1.000]
 
 3. HYPOTHESIS TESTS ON SEPARATION
 ----------------------------------
-PERMANOVA:                  F = 146.11, p = 0.00e+00, η² = 0.852 (10,000 perms)
-ANOSIM:                     R = 0.326, p = 0.00e+00 (10,000 perms)
-1-NN LOO Accuracy:          0.613, Balanced = 0.613, p = 0.00e+00
+PERMANOVA:                  F = 188.01, p = 0.00e+00, η² = 0.832 (10,000 perms)
+ANOSIM:                     R = 0.780, p = 0.00e+00 (10,000 perms)
+1-NN LOO Accuracy:          1.000, Balanced = 1.000, p = 0.00e+00
 
 4. EFFECT SIZES & SEPARABILITY
 -------------------------------
-Within-Between Gap (Δ):     0.437 [0.272, 0.667]
-Cohen's d:                  0.601
-Cliff's Delta:              0.326
-Margin:                     -2.910
+Within-Between Gap (Δ):     0.528 [0.356, 0.728]
+Cohen's d:                  1.868
+Cliff's Delta:              0.780
+Margin:                     -1.090
 
 5. ROBUSTNESS & STABILITY
 -------------------------
-Jaccard Stability:          0.396 [0.287, 0.526]
+Jaccard Stability:          0.421 [0.259, 0.546]
 
 INTERPRETATION
 --------------
 ✓ STRONG internal cluster structure (Silhouette > 0.5)
-⚠ WEAK agreement with true labels (ARI < 0.3)
+✓ MODERATE agreement with true labels (ARI > 0.3)
 ✓ HIGHLY SIGNIFICANT separation between groups (PERMANOVA p < 0.001)
-⚠ NEGATIVE MARGIN (-2.910): clusters overlap
+⚠ NEGATIVE MARGIN (-1.090): clusters overlap
 ⚠ UNSTABLE clustering (Jaccard < 0.6)

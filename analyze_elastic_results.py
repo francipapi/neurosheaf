@@ -37,9 +37,29 @@ def classify_models(model_names: List[str]) -> Dict[str, List[int]]:
     for i, name in enumerate(model_names):
         name_lower = name.lower()
         
-        if 'random' in name_lower:
+        # Check for Digits dataset models first (more specific patterns)
+        if name_lower.startswith('digits_mlp_seed') or name_lower.startswith('slimcnn_digits_seed'):
+            # Digits models with seed pattern are trained models
+            trained_indices.append(i)
+        elif name_lower.startswith('digits_mlp_random') or name_lower.startswith('slimcnn_digits_random'):
+            # Digits models with random pattern are random models
+            random_indices.append(i)
+        elif any(name_lower.startswith(prefix + '_seed') for prefix in ['digits_tiny_deep', 'digits_wide_shallow', 
+                                                                         'digits_pyramid', 'digits_hourglass']):
+            # New architecture trained models
+            trained_indices.append(i)
+        elif any(name_lower.startswith(prefix + '_random') for prefix in ['digits_tiny_deep', 'digits_wide_shallow',
+                                                                           'digits_pyramid', 'digits_hourglass']):
+            # New architecture random models
+            random_indices.append(i)
+        elif 'random' in name_lower:
+            # General random pattern
             random_indices.append(i)
         elif any(x in name_lower for x in ['trained', 'acc']):
+            # Explicit trained markers
+            trained_indices.append(i)
+        elif 'seed' in name_lower and any(x in name_lower for x in ['digits', 'mnist']):
+            # Models with seed in name for digits or mnist datasets are trained
             trained_indices.append(i)
         elif 'mnist' in name_lower and 'random' not in name_lower:
             # MNIST models without explicit 'trained' or 'acc' are trained models
@@ -92,25 +112,56 @@ def extract_model_info(model_name: str) -> Dict[str, Any]:
         info['variant'] = int(variant_match.group(1))
     
     # Determine dataset
-    if 'mnist' in name_lower:
+    if 'digits' in name_lower:
+        info['dataset'] = 'digits'
+    elif 'mnist' in name_lower:
         info['dataset'] = 'mnist'
     elif 'cifar' in name_lower:
         info['dataset'] = 'cifar'
     
-    # Determine type
-    if 'random' in name_lower:
+    # Determine type (improved logic for Digits models)
+    if name_lower.startswith('digits_mlp_seed') or name_lower.startswith('slimcnn_digits_seed'):
+        # Digits models with seed pattern are trained models
+        info['type'] = 'trained'
+    elif name_lower.startswith('digits_mlp_random') or name_lower.startswith('slimcnn_digits_random'):
+        # Digits models with random pattern are random models  
+        info['type'] = 'random'
+    elif any(name_lower.startswith(prefix + '_seed') for prefix in ['digits_tiny_deep', 'digits_wide_shallow', 
+                                                                     'digits_pyramid', 'digits_hourglass']):
+        # New architecture trained models
+        info['type'] = 'trained'
+    elif any(name_lower.startswith(prefix + '_random') for prefix in ['digits_tiny_deep', 'digits_wide_shallow',
+                                                                       'digits_pyramid', 'digits_hourglass']):
+        # New architecture random models
+        info['type'] = 'random'
+    elif 'random' in name_lower:
         info['type'] = 'random'
     elif any(x in name_lower for x in ['trained', 'acc']):
+        info['type'] = 'trained'
+    elif 'seed' in name_lower and any(x in name_lower for x in ['digits', 'mnist']):
+        # Models with seed in name for digits or mnist datasets are trained
         info['type'] = 'trained'
     elif 'mnist' in name_lower and 'random' not in name_lower:
         # MNIST models without explicit 'trained' or 'acc' are trained models
         info['type'] = 'trained'
     
-    # Architecture classification
-    if 'tinycnn' in name_lower:
+    # Architecture classification (check specific patterns first)
+    if 'slimcnn' in name_lower:
+        info['architecture'] = 'slimcnn'
+    elif 'tinycnn' in name_lower:
         info['architecture'] = 'tinycnn'
     elif 'mlp4layer' in name_lower:
         info['architecture'] = 'mlp4layer'
+    elif 'digits_mlp' in name_lower:
+        info['architecture'] = 'digits_mlp'
+    elif 'digits_tiny_deep' in name_lower:
+        info['architecture'] = 'tiny_deep'
+    elif 'digits_wide_shallow' in name_lower:
+        info['architecture'] = 'wide_shallow'
+    elif 'digits_pyramid' in name_lower:
+        info['architecture'] = 'pyramid'
+    elif 'digits_hourglass' in name_lower:
+        info['architecture'] = 'hourglass'
     elif 'custom' in name_lower:
         info['architecture'] = 'custom'
     elif 'mlp' in name_lower:

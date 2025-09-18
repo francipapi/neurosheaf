@@ -34,6 +34,7 @@ import torchvision.transforms as transforms
 import numpy as np
 import psutil
 from tqdm import tqdm
+from sklearn.datasets import load_digits
 
 # Core neurosheaf imports - exact same as testrun.py
 from neurosheaf.sheaf.core.gw_config import GWConfig
@@ -190,17 +191,34 @@ class CustomModel(nn.Module):
         
         return x
 
+
 class MLP4x256(nn.Module):
-    def __init__(self, num_layers: int = 4, hidden_dim: int = 64, num_classes: int = 10):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 16, num_classes: int = 10):
         super().__init__()
-        dims = [784] + [hidden_dim] * num_layers
+        # store config so get_model_info can read it
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+
+        dims = [28*28] + [hidden_dim] * num_layers
         layers = []
         for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1]))
-            layers.append(nn.LayerNorm(dims[i + 1]))
-            layers.append(nn.GELU())
+            layers.append(nn.Linear(dims[i], dims[i + 1], bias=False))
+            layers.append(nn.BatchNorm1d(dims[i + 1]))
+            layers.append(nn.ReLU(inplace=True))
         self.backbone = nn.Sequential(*layers)
         self.head = nn.Linear(hidden_dim, num_classes)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.view(x.size(0), -1)
@@ -208,34 +226,420 @@ class MLP4x256(nn.Module):
         return self.head(x)
 
 class TinyCNN(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self):
         super().__init__()
-        # Channels chosen to minimize units while staying usable for MNIST
-        self.conv1 = nn.Conv2d(1, 4, kernel_size=7, stride=7, padding=0, bias=True)   # 28x28 -> 4x4
-        self.conv2 = nn.Conv2d(4, 16, kernel_size=2, stride=1, padding=0, bias=True)  # 4x4   -> 3x3
-        self.conv3 = nn.Conv2d(16, 20, kernel_size=2, stride=1, padding=0, bias=True) # 3x3   -> 2x2
-        self.conv4 = nn.Conv2d(20, 24, kernel_size=2, stride=1, padding=0, bias=True) # 2x2   -> 1x1
-        self.fc    = nn.Linear(24, num_classes)
+        self.layers = nn.Sequential(
+            # (B, 1, 28, 28)
+            nn.Conv2d(1, 4, kernel_size=5, stride=2, padding=2),   # -> (B, 4, 14, 14)
+            nn.ReLU(inplace=True),
+            nn.Conv2d(4, 8, kernel_size=3, stride=2, padding=1),   # -> (B, 8, 7, 7)
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),                               # -> (B, 8, 1, 1)
+            nn.Flatten(),                                          # -> (B, 8)
+            nn.Linear(8, 10)                                       # -> (B, 10) logits
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+  
+class DigitsFullCNN(nn.Module):
+    def __init__(self, hidden_dim: int = 32, dropout_prob: float = 0.0, num_classes: int = 10):
+        super().__init__()
+        self.layers = nn.Sequential(
+            # Input: (B, 1, 8, 8)
+
+            # Conv backbone (unchanged)
+            nn.Conv2d(1, 10, kernel_size=3, stride=2, padding=1),  # -> (B, 10, 4, 4)
+            nn.BatchNorm2d(10),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(10, 20, kernel_size=3, stride=2, padding=1), # -> (B, 20, 2, 2)
+            nn.BatchNorm2d(20),
+            nn.ReLU(inplace=True),
+
+            nn.AdaptiveAvgPool2d(1),  # -> (B, 20, 1, 1)
+
+            # Small MLP head
+            nn.Flatten(),                          # -> (B, 20)
+            nn.Linear(20, hidden_dim),             # -> (B, hidden_dim)
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob) if dropout_prob > 0 else nn.Identity(),
+            nn.Linear(hidden_dim, num_classes)     # -> (B, num_classes) logits
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class TinyDigitsCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.Sequential(
+            # Input: (B, 1, 8, 8)
+            nn.Conv2d(1, 8, kernel_size=3, padding=1),      # -> (B, 8, 8, 8)
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 16, kernel_size=3, stride=2, padding=1),  # -> (B, 16, 4, 4)
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),                        # -> (B, 16, 1, 1)
+            nn.Flatten(),                                   # -> (B, 16)
+            nn.Linear(16, 10)                              # -> (B, 10) logits
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+class DigitsMLP(nn.Module):
+    def __init__(self, num_layers: int = 4, hidden_dim: int = 64, num_classes: int = 10):
+        super().__init__()
+        # store config so get_model_info can read it
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+
+        # Create sequential architecture: 64 -> hidden_dim -> ... -> hidden_dim -> 10
+        layers = []
+        
+        # Input layer: 64 -> hidden_dim
+        layers.extend([
+            nn.Linear(64, hidden_dim, bias=False),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True)
+        ])
+        
+        # Hidden layers: hidden_dim -> hidden_dim
+        for _ in range(num_layers - 1):
+            layers.extend([
+                nn.Linear(hidden_dim, hidden_dim, bias=False),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True)
+            ])
+        
+        # Output layer: hidden_dim -> num_classes
+        layers.append(nn.Linear(hidden_dim, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)  # Flatten to (batch_size, 64)
+        return self.layers(x)
+
+
+class Hybrid1DCNN(nn.Module):
+    """
+    Redesigned Hybrid 1D CNN with aggressive dimension reduction.
+    Uses strided convolutions and early pooling to minimize activation sizes for neurosheaf pipeline.
+    Target Laplacian size: ~2K×2K (95% reduction from original 37K×37K)
+    """
+    
+    def __init__(self, input_dim: int = 104, num_classes: int = 2):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        
+        # Stage 1: Initial feature extraction with immediate dimension reduction
+        # Input: [B, 1, 104]
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=7, stride=2, padding=3, bias=False)
+        # Output: [B, 16, 52] - Halved spatial dimension immediately
+        self.bn1 = nn.BatchNorm1d(16)
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
+        # After pool1: [B, 16, 26] - Total dims: 416
+        
+        # Stage 2: Feature refinement with further reduction
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2, bias=False)
+        # Output: [B, 32, 13] - Total dims: 416
+        self.bn2 = nn.BatchNorm1d(32)
+        
+        # Stage 3: Deep features with aggressive spatial reduction
+        self.conv3 = nn.Conv1d(32, 48, kernel_size=3, stride=1, padding=1, bias=False)
+        # Output: [B, 48, 13] - Total dims: 624
+        self.bn3 = nn.BatchNorm1d(48)
+        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
+        # After pool2: [B, 48, 6] - Total dims: 288
+        
+        # Stage 4: Final conv with very small spatial dimension
+        self.conv4 = nn.Conv1d(48, 64, kernel_size=3, stride=1, padding=0, bias=False)
+        # Output: [B, 64, 4] - Very small spatial dimension, Total dims: 256
+        self.bn4 = nn.BatchNorm1d(64)
+        
+        # Global pooling to fixed size for consistent FC input
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        # Output: [B, 64, 1] - Total dims: 64
+        
+        # Compact MLP Head (all under 100 units)
+        self.fc1 = nn.Linear(64, 32, bias=False)
+        self.bn_fc1 = nn.BatchNorm1d(32)
+        self.dropout1 = nn.Dropout(0.3)
+        
+        self.fc2 = nn.Linear(32, 16, bias=False)
+        self.bn_fc2 = nn.BatchNorm1d(16)
+        
+        # Classification output
+        self.head = nn.Linear(16, num_classes)
 
         self._init_weights()
 
     def _init_weights(self):
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
+            if isinstance(m, (nn.Conv1d, nn.Linear)):
                 nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))   # [B, 4, 4, 4]
-        x = F.relu(self.conv2(x))   # [B, 16, 3, 3]
-        x = F.relu(self.conv3(x))   # [B, 20, 2, 2]
-        x = F.relu(self.conv4(x))   # [B, 24, 1, 1]
-        x = x.view(x.size(0), -1)   # [B, 24]
-        return self.fc(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input: [batch_size, features]
+        # Reshape for 1D conv: [batch_size, channels=1, features]
+        x = x.unsqueeze(1)  # [B, 1, 104]
+        
+        # Stage 1: Initial feature extraction with immediate reduction
+        x = F.relu(self.bn1(self.conv1(x)))      # [B, 16, 52]
+        x = self.pool1(x)                        # [B, 16, 26]
+        
+        # Stage 2: Feature refinement with further reduction
+        x = F.relu(self.bn2(self.conv2(x)))      # [B, 32, 13]
+        
+        # Stage 3: Deep features with aggressive spatial reduction
+        x = F.relu(self.bn3(self.conv3(x)))      # [B, 48, 13]
+        x = self.pool2(x)                        # [B, 48, 6]
+        
+        # Stage 4: Final conv with very small spatial dimension
+        x = F.relu(self.bn4(self.conv4(x)))      # [B, 64, 4]
+        
+        # Global pooling to fixed size
+        x = self.global_avg_pool(x)              # [B, 64, 1]
+        x = x.squeeze(-1)                        # [B, 64]
+        
+        # Compact MLP Head with regularization
+        x = F.relu(self.bn_fc1(self.fc1(x)))     # [B, 32]
+        x = self.dropout1(x)
+        x = F.relu(self.bn_fc2(self.fc2(x)))     # [B, 16]
+        
+        # Classification output (logits)
+        return self.head(x)        
+
+
+class DeepMLP(nn.Module):
+    """Deep MLP for binary classification with emphasis on depth over width."""
+    
+    def __init__(self, input_dim: int = 104, num_layers: int = 12, hidden_dim: int = 32, num_classes: int = 2):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_classes = num_classes
+        
+        # Build deep network: input -> hidden1 -> ... -> hiddenN -> output
+        dims = [input_dim] + [hidden_dim] * num_layers
+        layers = []
+        
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1], bias=False))
+            layers.append(nn.BatchNorm1d(dims[i + 1]))
+            layers.append(nn.ReLU(inplace=True))
+            
+        self.backbone = nn.Sequential(*layers)
+        
+        # Classification head: output logits for binary classification
+        self.head = nn.Linear(hidden_dim, num_classes)
+        
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.backbone(x)
+        return self.head(x)
+
+
+class TinyDeepMLP(nn.Module):
+    """Tiny deep MLP with 8 layers and 16 hidden dimensions for digits classification."""
+    
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.num_layers = 8
+        self.hidden_dim = 16
+        self.num_classes = num_classes
+        self.arch_type = "tiny_deep"
+        
+        layers = []
+        # Input layer: 64 -> 16
+        layers.extend([
+            nn.Linear(64, 16, bias=False),
+            nn.BatchNorm1d(16),
+            nn.ReLU(inplace=True)
+        ])
+        
+        # 7 Hidden layers: 16 -> 16
+        for _ in range(7):
+            layers.extend([
+                nn.Linear(16, 16, bias=False),
+                nn.BatchNorm1d(16),
+                nn.ReLU(inplace=True)
+            ])
+        
+        # Output layer: 16 -> 10
+        layers.append(nn.Linear(16, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        return self.layers(x)
+
+
+class WideShallowMLP(nn.Module):
+    """Wide shallow MLP with 2 layers and 128 hidden dimensions for digits classification."""
+    
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.num_layers = 2
+        self.hidden_dim = 128
+        self.num_classes = num_classes
+        self.arch_type = "wide_shallow"
+        
+        layers = []
+        # Input layer: 64 -> 128
+        layers.extend([
+            nn.Linear(64, 128),
+            nn.LayerNorm(128),
+            nn.Tanh()
+        ])
+        
+        # Hidden layer: 128 -> 128
+        layers.extend([
+            nn.Linear(128, 128),
+            nn.LayerNorm(128),
+            nn.Tanh()
+        ])
+        
+        # Output layer: 128 -> 10
+        layers.append(nn.Linear(128, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        return self.layers(x)
+
+
+class PyramidMLP(nn.Module):
+    """Pyramid MLP with decreasing layer sizes for digits classification."""
+    
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.num_layers = 4
+        self.layer_dims = [128, 64, 32, 16]
+        self.num_classes = num_classes
+        self.arch_type = "pyramid"
+        
+        layers = []
+        prev_dim = 64
+        
+        for dim in self.layer_dims:
+            layers.extend([
+                nn.Linear(prev_dim, dim),
+                nn.GELU()
+            ])
+            prev_dim = dim
+        
+        # Output layer: 16 -> 10
+        layers.append(nn.Linear(16, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        return self.layers(x)
+
+
+class HourglassMLP(nn.Module):
+    """Hourglass MLP with expanding-contracting-expanding pattern for digits classification."""
+    
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.num_layers = 5
+        self.layer_dims = [96, 48, 24, 48, 96]
+        self.num_classes = num_classes
+        self.arch_type = "hourglass"
+        
+        layers = []
+        prev_dim = 64
+        
+        for i, dim in enumerate(self.layer_dims):
+            layers.extend([
+                nn.Linear(prev_dim, dim),
+                nn.Dropout(0.1),
+                nn.SiLU()
+            ])
+            prev_dim = dim
+        
+        # Output layer: 96 -> 10
+        layers.append(nn.Linear(96, num_classes))
+        
+        self.layers = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.view(x.size(0), -1)
+        return self.layers(x)
 
 
 class ModelProcessor:
@@ -266,6 +670,23 @@ class ModelProcessor:
         return (model_name.startswith('mlp4layer_mnist') or 
                 model_name.startswith('mnist_mlp') or
                 model_name.startswith('tinycnn'))
+    
+    def is_digits_model(self, model_name: str) -> bool:
+        """Check if a model is digits dataset-based by its filename pattern."""
+        return (model_name.startswith('slimcnn_digits') or 
+                model_name.startswith('digits_mlp') or
+                model_name.startswith('digits_fullcnn') or
+                model_name.startswith('digits_cnn') or
+                model_name.startswith('digits_tinycnn') or
+                model_name.startswith('digits_tiny_deep') or
+                model_name.startswith('digits_wide_shallow') or
+                model_name.startswith('digits_pyramid') or
+                model_name.startswith('digits_hourglass'))
+    
+    def is_adult_model(self, model_name: str) -> bool:
+        """Check if a model is Adult dataset-based by its filename pattern."""
+        return (model_name.startswith('hybrid_cnn') or 
+                model_name.startswith('deep_mlp'))
     
     def load_mnist_data(self, model) -> torch.Tensor:
         """Load MNIST test data with appropriate transform based on model type."""
@@ -305,6 +726,28 @@ class ModelProcessor:
             self.logger.error(f"Failed to load MNIST data: {e}")
             return None
     
+    def load_digits_data(self) -> torch.Tensor:
+        """Load sklearn digits dataset (8x8 images, 10 classes)."""
+        self.logger.info("Loading sklearn digits dataset...")
+        try:
+            # Load the digits dataset
+            digits = load_digits()
+            
+            # Convert to torch tensor and take first batch_size samples
+            # digits.data is already flattened (64 features per sample)
+            data = torch.from_numpy(digits.data[:self.batch_size]).float()
+            
+            # Normalize to [0, 16] range (same as original 8x8 pixel values)
+            data = data / data.max() * 16.0
+            
+            self.logger.info(f"Loaded digits data shape: {data.shape}")
+            self.logger.info(f"Data range: [{data.min().item():.2f}, {data.max().item():.2f}]")
+            self.logger.info(f"Target classes: {np.unique(digits.target[:self.batch_size])}")
+            return data
+        except Exception as e:
+            self.logger.error(f"Failed to load digits data: {e}")
+            return None
+    
     def load_model_by_type(self, model_path: Path) -> Optional[torch.nn.Module]:
         """Auto-detect model type from filename and load with appropriate architecture."""
         model_name = model_path.stem
@@ -322,12 +765,58 @@ class ModelProcessor:
                 return load_model(TinyCNN, str(model_path))
             elif model_name.startswith('mlp4'):
                 return load_model(MLP4x256, str(model_path))
+            elif model_name.startswith('slimcnn_digits'):
+                return load_model(DigitsFullCNN, str(model_path))
+            elif model_name.startswith('digits_mlp'):
+                return load_model(DigitsMLP, str(model_path))
+            elif model_name.startswith('digits_fullcnn'):
+                return load_model(DigitsFullCNN, str(model_path))
+            elif model_name.startswith('digits_cnn'):
+                return load_model(TinyDigitsCNN, str(model_path))
+            elif model_name.startswith('digits_tinycnn'):
+                return self.load_digits_tinycnn_model(model_path)
+            elif model_name.startswith('hybrid_cnn'):
+                return load_model(Hybrid1DCNN, str(model_path))
+            elif model_name.startswith('deep_mlp'):
+                return load_model(DeepMLP, str(model_path))
+            elif model_name.startswith('digits_tiny_deep'):
+                return load_model(TinyDeepMLP, str(model_path))
+            elif model_name.startswith('digits_wide_shallow'):
+                return load_model(WideShallowMLP, str(model_path))
+            elif model_name.startswith('digits_pyramid'):
+                return load_model(PyramidMLP, str(model_path))
+            elif model_name.startswith('digits_hourglass'):
+                return load_model(HourglassMLP, str(model_path))
             else:
                 self.logger.warning(f"Unknown model type for {model_name}, trying as MLP")
                 return load_model(MLPModel, str(model_path))
                 
         except Exception as e:
             self.logger.error(f"Failed to load model {model_path}: {e}")
+            return None
+    
+    def load_digits_tinycnn_model(self, model_path: Path) -> Optional[torch.nn.Module]:
+        """Load digits_tinycnn model with nested state dict format."""
+        try:
+            # Load the checkpoint
+            checkpoint = torch.load(str(model_path), map_location='cpu')
+            
+            # Create model instance
+            model = TinyDigitsCNN()
+            
+            # Handle nested state dict format
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                self.logger.info(f"Loaded digits_tinycnn model from nested format: {model_path.name}")
+            else:
+                # Fallback to direct state dict
+                model.load_state_dict(checkpoint)
+                self.logger.info(f"Loaded digits_tinycnn model from direct format: {model_path.name}")
+            
+            return model
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load digits_tinycnn model {model_path}: {e}")
             return None
     
     def extract_model_metadata(self, model_path: Path) -> Dict[str, str]:
@@ -360,6 +849,28 @@ class ModelProcessor:
             metadata['architecture'] = 'tinycnn'
         elif model_name.startswith('mlp4'):
             metadata['architecture'] = 'mlp4'
+        elif model_name.startswith('slimcnn_digits'):
+            metadata['architecture'] = 'slimcnn_digits'
+        elif model_name.startswith('digits_mlp'):
+            metadata['architecture'] = 'digits_mlp'
+        elif model_name.startswith('digits_fullcnn'):
+            metadata['architecture'] = 'digits_fullcnn'
+        elif model_name.startswith('digits_cnn'):
+            metadata['architecture'] = 'digits_cnn'
+        elif model_name.startswith('digits_tinycnn'):
+            metadata['architecture'] = 'digits_tinycnn'
+        elif model_name.startswith('digits_tiny_deep'):
+            metadata['architecture'] = 'digits_tiny_deep'
+        elif model_name.startswith('digits_wide_shallow'):
+            metadata['architecture'] = 'digits_wide_shallow'
+        elif model_name.startswith('digits_pyramid'):
+            metadata['architecture'] = 'digits_pyramid'
+        elif model_name.startswith('digits_hourglass'):
+            metadata['architecture'] = 'digits_hourglass'
+        elif model_name.startswith('hybrid_cnn'):
+            metadata['architecture'] = 'hybrid_cnn'
+        elif model_name.startswith('deep_mlp'):
+            metadata['architecture'] = 'deep_mlp'
         
         # Handle different naming patterns
         parts = model_name.split('_')
@@ -386,6 +897,112 @@ class ModelProcessor:
             # Extract version number (last part)
             if len(parts) >= 4:
                 metadata['version'] = parts[3]  # '001', '002', etc.
+        elif model_name.startswith('slimcnn_digits'):
+            # Pattern: slimcnn_digits_seedXX
+            metadata['type'] = 'trained'
+            seed_match = re.search(r'seed(\d+)', model_name)
+            if seed_match:
+                metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_mlp'):
+            # Pattern: digits_mlp_seedXX or digits_mlp_random_XXX
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                # Extract version number (last part)
+                version_match = re.search(r'random_(\d+)', model_name)
+                if version_match:
+                    metadata['version'] = version_match.group(1)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_fullcnn'):
+            # Pattern: digits_fullcnn_random_XXX
+            metadata['type'] = 'random'
+            version_match = re.search(r'random_(\d+)', model_name)
+            if version_match:
+                metadata['version'] = version_match.group(1)
+        elif model_name.startswith('digits_cnn'):
+            # Pattern: digits_cnn_seedXX or digits_cnn_random_*
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                # Extract initialization method, hidden_dim, dropout, seed
+                init_match = re.search(r'random_([a-zA-Z_]+)_h(\d+)_d([0-9.]+)_seed(\d+)', model_name)
+                if init_match:
+                    metadata['init_method'] = init_match.group(1)
+                    metadata['hidden_dim'] = init_match.group(2)
+                    metadata['dropout'] = init_match.group(3)
+                    metadata['seed'] = init_match.group(4)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_tinycnn'):
+            # Pattern: digits_tinycnn_random_initialization_seedXX
+            metadata['type'] = 'random'
+            # Extract initialization method and seed
+            init_match = re.search(r'random_([a-zA-Z_]+)_seed(\d+)', model_name)
+            if init_match:
+                metadata['init_method'] = init_match.group(1)
+                metadata['seed'] = init_match.group(2)
+        elif model_name.startswith('hybrid_cnn'):
+            # Pattern: hybrid_cnn_adult
+            metadata['type'] = 'trained'
+        elif model_name.startswith('deep_mlp'):
+            # Pattern: deep_mlp_adult_seedXX
+            metadata['type'] = 'trained'
+            seed_match = re.search(r'seed(\d+)', model_name)
+            if seed_match:
+                metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_tiny_deep'):
+            # Pattern: digits_tiny_deep_seedXX or digits_tiny_deep_random_XXX
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                version_match = re.search(r'random_(\d+)', model_name)
+                if version_match:
+                    metadata['version'] = version_match.group(1)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_wide_shallow'):
+            # Pattern: digits_wide_shallow_seedXX or digits_wide_shallow_random_XXX
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                version_match = re.search(r'random_(\d+)', model_name)
+                if version_match:
+                    metadata['version'] = version_match.group(1)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_pyramid'):
+            # Pattern: digits_pyramid_seedXX or digits_pyramid_random_XXX
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                version_match = re.search(r'random_(\d+)', model_name)
+                if version_match:
+                    metadata['version'] = version_match.group(1)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
+        elif model_name.startswith('digits_hourglass'):
+            # Pattern: digits_hourglass_seedXX or digits_hourglass_random_XXX
+            if 'random' in model_name:
+                metadata['type'] = 'random'
+                version_match = re.search(r'random_(\d+)', model_name)
+                if version_match:
+                    metadata['version'] = version_match.group(1)
+            else:
+                metadata['type'] = 'trained'
+                seed_match = re.search(r'seed(\d+)', model_name)
+                if seed_match:
+                    metadata['seed'] = seed_match.group(1)
         else:
             # Original patterns: mlp_*, custom_*
             if len(parts) >= 2:
@@ -427,6 +1044,30 @@ class ModelProcessor:
                 if data is None:
                     self.logger.error(f"Failed to load MNIST data for {model_name}")
                     return None
+            elif self.is_digits_model(model_name):
+                # Use real digits dataset for digits models
+                if isinstance(model, (DigitsFullCNN, TinyDigitsCNN)):
+                    # CNN models need 4D tensors: [batch_size, 1, 8, 8]
+                    # Load real digits data and reshape for CNN
+                    digits_data = self.load_digits_data()
+                    if digits_data is None:
+                        self.logger.error(f"Failed to load digits data for {model_name}")
+                        return None
+                    # Reshape from [batch_size, 64] to [batch_size, 1, 8, 8]
+                    data = digits_data.view(digits_data.size(0), 1, 8, 8)
+                    self.logger.info(f"Loaded real digits data for CNN: {data.shape}")
+                else:
+                    # MLP models need flattened input: [batch_size, 64]
+                    # Load real digits data (already flattened)
+                    data = self.load_digits_data()
+                    if data is None:
+                        self.logger.error(f"Failed to load digits data for {model_name}")
+                        return None
+                    self.logger.info(f"Loaded real digits data for MLP: {data.shape}")
+            elif self.is_adult_model(model_name):
+                # Generate data for Adult dataset models (104 features, binary classification)
+                data = torch.randn(self.batch_size, 104)
+                self.logger.info(f"Generated Adult dataset data: {data.shape}")
             else:
                 # Generate random data for other models - exact same as testrun.py
                 data = 10 * torch.randn(self.batch_size, 3)

@@ -1,0 +1,33 @@
+
+CLUSTERING METRICS SUMMARY
+=========================
+
+Dataset: 40 models (20 trained, 20 random)
+
+INTERNAL QUALITY METRICS:
+- Silhouette Coefficient: 0.548
+- Davies-Bouldin Index: 0.666 (lower is better)
+- Calinski-Harabasz: 67 (higher is better)  
+- Dunn Index: 0.051 (higher is better)
+- Cophenetic Correlation: 0.947
+
+HYPOTHESIS TESTS:
+- PERMANOVA F-statistic: 69.14 (p = 0.00e+00)
+- ANOSIM R-statistic: 1.561 (p = 0.00e+00)
+
+EXTERNAL VALIDATION:
+- Adjusted Rand Index: 0.715
+- Adjusted Mutual Information: 0.678
+- V-measure: 0.684
+
+EFFECT SIZES:
+- Cohen's d: 1.864
+
+STABILITY:
+- Jaccard Stability: 0.520
+
+INTERPRETATION:
+- Silhouette > 0.5: Good separation
+- ARI/AMI/V-measure = 1.0: Perfect clustering agreement
+- Cohen's d > 0.8: Large effect size
+- High PERMANOVA F and low p-value: Significant group differences
