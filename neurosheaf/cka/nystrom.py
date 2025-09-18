@@ -197,7 +197,7 @@ class NystromCKA:
         n_samples, n_features = X.shape
         
         # For small matrices, compute rank directly
-        if n_samples <= 1000 and n_features <= 1000:
+        if n_samples <= 2000 and n_features <= 2000:
             try:
                 # Compute full SVD for accurate rank estimation
                 if should_use_cpu_fallback(X.device, 'svd'):
@@ -208,7 +208,7 @@ class NystromCKA:
                     _, S, _ = torch.linalg.svd(X)
                 
                 # Count significant singular values
-                max_sv = S[0] if len(S) > 0 else 1.0
+                max_sv = S[0] if S.numel() > 0 else 1.0
                 threshold = max(self.rank_tolerance, max_sv * self.rank_tolerance)
                 effective_rank = torch.sum(S > threshold).item()
                 
@@ -242,7 +242,7 @@ class NystromCKA:
             eigenvals, _ = torch.sort(eigenvals, descending=True)
             
             # Count significant eigenvalues
-            max_eig = eigenvals[0] if len(eigenvals) > 0 else 1.0
+            max_eig = eigenvals[0] if eigenvals.numel() > 0 else 1.0
             threshold = max(self.rank_tolerance, max_eig * self.rank_tolerance)
             effective_rank = torch.sum(eigenvals > threshold).item()
             
@@ -308,7 +308,7 @@ class NystromCKA:
         
         try:
             # Use randomized SVD for efficiency with large matrices
-            if n_samples > 1000:
+            if n_samples > 2000:
                 # Approximate leverage scores using random sampling
                 sample_size = min(effective_rank * 2, n_samples // 2)
                 random_matrix = torch.randn(X.shape[1], sample_size, device=X.device)
@@ -552,13 +552,13 @@ class NystromCKA:
             landmarks = torch.unique(landmarks)
             
             # If we lost some landmarks due to duplicates, add random ones
-            if len(landmarks) < n_landmarks:
-                remaining = n_landmarks - len(landmarks)
+            if landmarks.numel() < n_landmarks:
+                remaining = n_landmarks - landmarks.numel()
                 all_indices = torch.arange(n_samples, device=X.device)
                 remaining_indices = all_indices[~torch.isin(all_indices, landmarks)]
                 
-                if len(remaining_indices) > 0:
-                    additional = remaining_indices[torch.randperm(len(remaining_indices))[:remaining]]
+                if remaining_indices.numel() > 0:
+                    additional = remaining_indices[torch.randperm(remaining_indices.numel())[:remaining]]
                     landmarks = torch.cat([landmarks, additional])
             
             return landmarks[:n_landmarks]
@@ -1042,7 +1042,7 @@ class NystromCKA:
         n_samples = X.shape[0]
         
         # Only compute exact kernels for small datasets
-        if n_samples <= 2000:
+        if n_samples <= 3000:
             try:
                 K_exact = X @ X.T
                 L_exact = Y @ Y.T

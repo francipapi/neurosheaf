@@ -279,6 +279,15 @@ class EnhancedVisualizationFactory:
                 eigenvals = seq.detach().cpu().numpy()
                 eigenvals = np.maximum(eigenvals, 1e-12)
                 eigenval_matrix[:len(eigenvals), i] = eigenvals
+        
+        # Compute mean eigenvalue evolution
+        mean_eigenvals = []
+        for i in range(len(filtration_params)):
+            valid_eigenvals = eigenval_matrix[:, i][~np.isnan(eigenval_matrix[:, i])]
+            if len(valid_eigenvals) > 0:
+                mean_eigenvals.append(np.mean(valid_eigenvals))
+            else:
+                mean_eigenvals.append(np.nan)
                 
         # Plot ALL eigenvalue tracks
         n_plot = max_eigenvals
@@ -304,6 +313,26 @@ class EnhancedVisualizationFactory:
                     ),
                     row=row, col=col
                 )
+        
+        # Add mean eigenvalue trace
+        valid_mean_mask = ~np.isnan(mean_eigenvals)
+        if np.any(valid_mean_mask):
+            fig.add_trace(
+                go.Scatter(
+                    x=np.array(filtration_params)[valid_mean_mask],
+                    y=np.array(mean_eigenvals)[valid_mean_mask],
+                    mode='lines+markers',
+                    name='Mean λ',
+                    line=dict(
+                        color=self.design_system.current_theme.accent_color,
+                        width=4
+                    ),
+                    marker=dict(size=8, symbol='diamond'),
+                    showlegend=True,
+                    legendgroup='mean'
+                ),
+                row=row, col=col
+            )
                 
         fig.update_xaxes(title_text="Filtration Parameter", row=row, col=col)
         fig.update_yaxes(title_text="Eigenvalue (log scale)", type="log", row=row, col=col)

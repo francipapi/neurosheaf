@@ -1,0 +1,44 @@
+\begin{table}[h!]
+\centering
+\caption{Distance Matrix Cluster Analysis}
+\label{tab:cluster_analysis}
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{Internal Quality}} \\
+Silhouette Coefficient & 0.756 & [0.667, 0.823] \
+Davies-Bouldin Index & 0.394 & [0.333, 0.455] \
+Calinski-Harabasz & 293.284 & [184.813, 443.377] \
+Dunn Index & 0.091 & [0.087, 0.261] \
+Cophenetic Correlation & 0.787 & [0.733, 0.853] \
+\midrule
+\multicolumn{3}{l}{\textbf{Stability}} \\
+ARI Stability & 0.982 & [0.808, 1.000] \
+Jaccard Stability & 0.991 & [0.917, 1.000] \
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{External Validation}} \\
+Adjusted Rand Index & 1.000 & [1.000, 1.000] \
+Adjusted Mutual Info & 1.000 & [1.000, 1.000] \
+V-measure & 1.000 & [1.000, 1.000] \
+\midrule
+\multicolumn{3}{l}{\textbf{Hypothesis Tests}} \\
+PERMANOVA F & 475.291 & $p=0.002$ \
+ANOSIM R & 0.921 & $p=0.002$ \
+\midrule
+\multicolumn{3}{l}{\textbf{Effect Size}} \\
+Cohen's $d$ & 2.270 & -- \
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table}

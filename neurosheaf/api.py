@@ -106,7 +106,8 @@ class NeurosheafAnalyzer:
         preserve_eigenvalues: Optional[bool] = None,
         use_gram_regularization: bool = False,
         regularization_config: Optional[Dict[str, Any]] = None,
-        exclude_final_single_output: bool = False
+        exclude_final_single_output: bool = False,
+        use_normalized_laplacian: bool = False
     ) -> Dict[str, Any]:
         """Perform complete neurosheaf analysis.
         
@@ -128,6 +129,7 @@ class NeurosheafAnalyzer:
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization (if None, uses defaults)
             exclude_final_single_output: Whether to exclude final layers with single outputs to prevent GW degeneracy
+            use_normalized_laplacian: Whether to use normalized Hodge Laplacian (L x = λ M x) for global section computation
             
         Returns:
             Dictionary containing analysis results:
@@ -142,6 +144,7 @@ class NeurosheafAnalyzer:
                 - 'directionality_parameter': q parameter (if directed)
                 - 'preserve_eigenvalues': eigenvalue preservation setting
                 - 'exclude_final_single_output': single-output layer exclusion setting
+                - 'use_normalized_laplacian': normalized Laplacian setting
                 
         Raises:
             ValidationError: If input validation fails
@@ -165,8 +168,11 @@ class NeurosheafAnalyzer:
         
         # Set default GW config if needed
         if method == 'gromov_wasserstein' and gw_config is None:
-            gw_config = GWConfig()
+            gw_config = GWConfig(use_normalized_laplacian=use_normalized_laplacian)
             self.logger.info("Using default GW configuration")
+        elif gw_config is not None and hasattr(gw_config, 'use_normalized_laplacian'):
+            # Update existing config if needed
+            gw_config.use_normalized_laplacian = use_normalized_laplacian
         
         # Validate GW config if provided
         if gw_config is not None:
@@ -185,12 +191,14 @@ class NeurosheafAnalyzer:
             if directed:
                 return self._analyze_directed(
                     model, data, method, gw_config, directionality_parameter, 
-                    preserve_eigenvalues, use_gram_regularization, regularization_config
+                    preserve_eigenvalues, use_gram_regularization, regularization_config, 
+                    use_normalized_laplacian
                 )
             else:
                 return self._analyze_undirected(
                     model, data, method, gw_config, preserve_eigenvalues, 
-                    use_gram_regularization, regularization_config, exclude_final_single_output
+                    use_gram_regularization, regularization_config, exclude_final_single_output,
+                    use_normalized_laplacian
                 )
         except Exception as e:
             self.logger.error(f"Analysis failed: {e}")
@@ -279,7 +287,8 @@ class NeurosheafAnalyzer:
     
     def _analyze_directed(self, model: nn.Module, data: torch.Tensor, method: str, gw_config: Optional[GWConfig],
                          directionality_parameter: float, preserve_eigenvalues: Optional[bool] = None, 
-                         use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         use_gram_regularization: bool = False, regularization_config: Optional[Dict[str, Any]] = None,
+                         use_normalized_laplacian: bool = False) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
         
         Args:
@@ -291,6 +300,7 @@ class NeurosheafAnalyzer:
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
+            use_normalized_laplacian: Whether to use normalized Hodge Laplacian
             
         Returns:
             Dictionary with directed analysis results
@@ -336,6 +346,7 @@ class NeurosheafAnalyzer:
             'preserve_eigenvalues': preserve_eigenvalues,
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
+            'use_normalized_laplacian': use_normalized_laplacian,
             'construction_time': construction_time,
             'device_info': self._get_device_info(),
             'memory_info': self._get_memory_info(),
@@ -352,7 +363,8 @@ class NeurosheafAnalyzer:
     
     def _analyze_undirected(self, model: nn.Module, data: torch.Tensor, method: str, gw_config: Optional[GWConfig],
                            preserve_eigenvalues: Optional[bool] = None, use_gram_regularization: bool = False, 
-                           regularization_config: Optional[Dict[str, Any]] = None, exclude_final_single_output: bool = False) -> Dict[str, Any]:
+                           regularization_config: Optional[Dict[str, Any]] = None, exclude_final_single_output: bool = False,
+                           use_normalized_laplacian: bool = False) -> Dict[str, Any]:
         """Perform undirected sheaf analysis with method routing.
         
         Routes to appropriate sheaf construction method based on the method parameter.
@@ -367,6 +379,7 @@ class NeurosheafAnalyzer:
             use_gram_regularization: Whether to apply Tikhonov regularization to Gram matrices
             regularization_config: Configuration for Tikhonov regularization
             exclude_final_single_output: Whether to exclude final layers with single outputs to prevent GW degeneracy
+            use_normalized_laplacian: Whether to use normalized Hodge Laplacian
             
         Returns:
             Dictionary with undirected analysis results
@@ -410,6 +423,7 @@ class NeurosheafAnalyzer:
             'use_gram_regularization': use_gram_regularization,
             'regularization_config': regularization_config,
             'exclude_final_single_output': exclude_final_single_output,
+            'use_normalized_laplacian': use_normalized_laplacian,
             'construction_time': construction_time,
             'device_info': self._get_device_info(),
             'memory_info': self._get_memory_info(),
@@ -431,6 +445,7 @@ class NeurosheafAnalyzer:
         gw_config: Optional[GWConfig] = None,
         directionality_parameter: float = 0.25,
         preserve_eigenvalues: Optional[bool] = None,
+        use_normalized_laplacian: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """Perform directed sheaf analysis.
@@ -444,6 +459,7 @@ class NeurosheafAnalyzer:
             gw_config: GW configuration (uses defaults if None when method='gromov_wasserstein')
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
+            use_normalized_laplacian: Whether to use normalized Hodge Laplacian
             **kwargs: Additional arguments passed to analyze()
             
         Returns:
@@ -457,6 +473,7 @@ class NeurosheafAnalyzer:
             directed=True,
             directionality_parameter=directionality_parameter,
             preserve_eigenvalues=preserve_eigenvalues,
+            use_normalized_laplacian=use_normalized_laplacian,
             **kwargs
         )
     
@@ -467,7 +484,8 @@ class NeurosheafAnalyzer:
         method: str = 'procrustes',
         gw_config: Optional[GWConfig] = None,
         directionality_parameter: float = 0.25,
-        preserve_eigenvalues: Optional[bool] = None
+        preserve_eigenvalues: Optional[bool] = None,
+        use_normalized_laplacian: bool = False
     ) -> Dict[str, Any]:
         """Compare directed vs undirected analysis.
         
@@ -482,6 +500,7 @@ class NeurosheafAnalyzer:
             gw_config: GW configuration (uses defaults if None when method='gromov_wasserstein')
             directionality_parameter: q parameter controlling directional strength (0.0-1.0)
             preserve_eigenvalues: Whether to preserve eigenvalues in whitening (None uses builder default)
+            use_normalized_laplacian: Whether to use normalized Hodge Laplacian
             
         Returns:
             Dictionary containing comparison results:
@@ -493,8 +512,8 @@ class NeurosheafAnalyzer:
         self.logger.info("Starting directed vs undirected comparison...")
         
         # Perform both analyses
-        directed_results = self.analyze_directed(model, data, method, gw_config, directionality_parameter, preserve_eigenvalues)
-        undirected_results = self.analyze(model, data, method=method, gw_config=gw_config, directed=False, preserve_eigenvalues=preserve_eigenvalues)
+        directed_results = self.analyze_directed(model, data, method, gw_config, directionality_parameter, preserve_eigenvalues, use_normalized_laplacian)
+        undirected_results = self.analyze(model, data, method=method, gw_config=gw_config, directed=False, preserve_eigenvalues=preserve_eigenvalues, use_normalized_laplacian=use_normalized_laplacian)
         
         # Compute comparison metrics
         comparison = self._compute_comparison_metrics(directed_results, undirected_results)

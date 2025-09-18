@@ -168,7 +168,7 @@ class SheafLaplacianBuilder:
     def _build_gw_laplacian(self, sheaf: Sheaf, edge_weights: Optional[Dict]) -> Tuple[csr_matrix, LaplacianMetadata]:
         """Build Laplacian for GW-based sheaf using GW-specific assembly."""
         # Lazy import to avoid circular dependencies
-        from .gw_laplacian import GWLaplacianBuilder, GWLaplacianMetadata
+        from .gw_laplacian import GWLaplacianBuilder, GWLaplacianMetadata, GWWeightTransform
         
         # Create GW builder with same settings
         gw_builder = GWLaplacianBuilder(
@@ -176,11 +176,27 @@ class SheafLaplacianBuilder:
             sparsity_threshold=self.sparsity_threshold
         )
         
+        # If explicit edge weights provided, we need to handle them specially
+        # Since GW builder doesn't accept weights directly, we temporarily modify metadata
+        original_gw_costs = None
+        if edge_weights is not None:
+            # Save original GW costs
+            original_gw_costs = sheaf.metadata.get('gw_costs', {}).copy()
+            # Override with provided weights (as raw costs)
+            sheaf.metadata['gw_costs'] = edge_weights.copy()
+        
         # Build using GW-specific method
         laplacian = gw_builder.build_laplacian(sheaf, sparse=True)
         
+        # Restore original metadata if we modified it
+        if original_gw_costs is not None:
+            sheaf.metadata['gw_costs'] = original_gw_costs
+        
         # Create GW metadata with sheaf reference (CRITICAL for filtration)
-        gw_metadata = gw_builder._initialize_gw_metadata(sheaf, edge_weights or gw_builder.extract_edge_weights(sheaf))
+        # Use the edge weights that were actually used
+        from .gw_laplacian import GWWeightTransform  # Local import to avoid circular dependency
+        actual_weights = edge_weights if edge_weights is not None else gw_builder.extract_edge_weights(sheaf, transform_method=GWWeightTransform.EXPONENTIAL)
+        gw_metadata = gw_builder._initialize_gw_metadata(sheaf, actual_weights)
         
         # Update with sparse matrix properties
         if hasattr(laplacian, 'nnz'):

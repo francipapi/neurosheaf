@@ -12,7 +12,7 @@ and operate in whitened coordinate spaces for optimal properties.
 
 from .whitening import WhiteningProcessor
 from .procrustes import scaled_procrustes_whitened, scaled_procrustes_adaptive
-from .validation import validate_sheaf_properties, validate_restriction_orthogonality
+from .validation import validate_sheaf_properties, validate_restriction_orthogonality, validate_restriction_maps_gw
 from .gram_matrices import (
     compute_gram_matrix, 
     compute_gram_matrices_from_activations,
@@ -33,6 +33,7 @@ __all__ = [
     "scaled_procrustes_adaptive",
     "validate_sheaf_properties",
     "validate_restriction_orthogonality",
+    "validate_restriction_maps_gw",
     "compute_gram_matrix",
     "compute_gram_matrices_from_activations",
     "compute_regularized_gram_matrix",

@@ -532,6 +532,18 @@ class EnhancedSpectralVisualizer:
                 eigenvals = seq.detach().cpu().numpy()
                 eigenval_matrix[:len(eigenvals), i] = eigenvals
                 eigenval_matrix_log[:len(eigenvals), i] = np.maximum(eigenvals, 1e-12)
+        
+        # Compute mean eigenvalue evolution
+        mean_eigenvals = []
+        mean_eigenvals_log = []
+        for i in range(len(filtration_params)):
+            valid_eigenvals = eigenval_matrix[:, i][~np.isnan(eigenval_matrix[:, i])]
+            if len(valid_eigenvals) > 0:
+                mean_eigenvals.append(np.mean(valid_eigenvals))
+                mean_eigenvals_log.append(np.maximum(np.mean(valid_eigenvals), 1e-12))
+            else:
+                mean_eigenvals.append(np.nan)
+                mean_eigenvals_log.append(np.nan)
                 
         # Plot ALL eigenvalue tracks (no limit)
         n_plot = max_eigenvals  # Plot all eigenvalues, no limit
@@ -572,6 +584,41 @@ class EnhancedSpectralVisualizer:
                     showlegend=False  # Don't duplicate in legend
                 ))
         
+        # Add mean eigenvalue traces (both linear and log)
+        valid_mean_mask = ~np.isnan(mean_eigenvals)
+        if np.any(valid_mean_mask):
+            # Mean trace - Linear scale
+            fig.add_trace(go.Scatter(
+                x=np.array(filtration_params)[valid_mean_mask],
+                y=np.array(mean_eigenvals)[valid_mean_mask],
+                mode='lines+markers',
+                name='Mean λ',
+                line=dict(
+                    color=self.design_system.current_theme.accent_color, 
+                    width=4
+                ),
+                marker=dict(size=8, symbol='diamond'),
+                visible=False,  # Start with log scale (hide linear)
+                legendgroup='mean_eigenvalue',
+                showlegend=True
+            ))
+            
+            # Mean trace - Log scale
+            fig.add_trace(go.Scatter(
+                x=np.array(filtration_params)[valid_mean_mask],
+                y=np.array(mean_eigenvals_log)[valid_mean_mask],
+                mode='lines+markers',
+                name='Mean λ',
+                line=dict(
+                    color=self.design_system.current_theme.accent_color,
+                    width=4
+                ),
+                marker=dict(size=8, symbol='diamond'),
+                visible=True,  # Start with log scale
+                legendgroup='mean_eigenvalue',
+                showlegend=False  # Don't duplicate in legend
+            ))
+        
         # Prepare update menus for scale toggle
         updatemenus = []
         if enable_scale_toggle:
@@ -592,14 +639,23 @@ class EnhancedSpectralVisualizer:
                 max_val_log = np.max(non_nan_log)
                 log_range = [np.log10(min_val_log * 0.1), np.log10(max_val_log * 10)]
             
-            # Create visibility arrays
-            n_traces = n_plot * 2
+            # Create visibility arrays (eigenvalue traces + mean traces)
+            n_eigenval_traces = n_plot * 2  # Linear and log for each eigenvalue
+            n_mean_traces = 2 if np.any(valid_mean_mask) else 0  # Linear and log for mean
+            n_total_traces = n_eigenval_traces + n_mean_traces
+            
             linear_visibility = []
             log_visibility = []
             
+            # Eigenvalue traces visibility
             for i in range(n_plot):
                 linear_visibility.extend([True, False])  # Show ALL linear, hide ALL log
                 log_visibility.extend([False, True])     # Hide ALL linear, show ALL log
+            
+            # Mean traces visibility (if they exist)
+            if n_mean_traces > 0:
+                linear_visibility.extend([True, False])  # Show linear mean, hide log mean
+                log_visibility.extend([False, True])     # Hide linear mean, show log mean
             
             updatemenus = [
                 {

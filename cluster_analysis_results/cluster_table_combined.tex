@@ -1,0 +1,35 @@
+
+% Cluster Analysis Results Table for combined
+\begin{table}[h!]
+\centering
+\caption{Cluster Analysis Results: Combined Labels}
+\label{tab:cluster_combined}
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{Internal Quality}} \\
+Silhouette Coefficient & 0.680 & [0.649, 0.753] \\
+Davies-Bouldin Index & 0.672 & [0.428, 0.828] \\
+Calinski-Harabasz & 109 & [67, 205] \\
+Dunn Index & 0.430 & [0.430, 0.853] \\
+Cophenetic Correlation & 0.902 & [0.873, 0.943] \\
+\midrule
+\multicolumn{3}{l}{\textbf{External Validation}} \\
+Adjusted Rand Index & 0.534 & [0.284, 0.820] \\
+Adjusted Mutual Info & 0.551 & [0.378, 0.811] \\
+V-measure & 0.566 & [0.405, 0.808] \\
+\midrule
+\multicolumn{3}{l}{\textbf{Hypothesis Tests}} \\
+PERMANOVA F & 188.01 & $p = 0.00e+00$ \\
+ANOSIM R & 0.780 & $p = 0.00e+00$ \\
+\midrule
+\multicolumn{3}{l}{\textbf{Effect Sizes}} \\
+Cohen's $d$ & 1.868 & - \\
+Margin & -1.090 & - \\
+\midrule
+\multicolumn{3}{l}{\textbf{Stability}} \\
+Jaccard Stability & 0.421 & [0.259, 0.546] \\
+\bottomrule
+\end{tabular}
+\end{table}

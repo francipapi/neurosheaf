@@ -192,6 +192,11 @@ class DirectedSheafBuilder:
                 )
             )
             
+            # Add canonical indexing metadata for deterministic matrix construction
+            from ...utils.indexing import create_sheaf_indexing_metadata
+            indexing_metadata = create_sheaf_indexing_metadata(base_sheaf.poset)
+            directed_sheaf.metadata.update(indexing_metadata)
+            
             # Step 5: Validate construction
             if self.validate_construction:
                 logger.info("Step 5: Validating directed sheaf construction")
@@ -320,7 +325,7 @@ class DirectedSheafBuilder:
         return complex_stalks
     
     def _extract_adjacency_matrix(self, poset: nx.DiGraph) -> torch.Tensor:
-        """Extract adjacency matrix from poset.
+        """Extract adjacency matrix from poset with canonical ordering.
         
         Args:
             poset: Directed graph poset
@@ -328,8 +333,11 @@ class DirectedSheafBuilder:
         Returns:
             Adjacency matrix tensor
         """
-        # Create node ordering
-        nodes = list(poset.nodes())
+        # Import canonical ordering utilities
+        from ...utils.indexing import canonical_node_order
+        
+        # Create canonical node ordering
+        nodes = canonical_node_order(poset.nodes())
         n = len(nodes)
         node_to_idx = {node: i for i, node in enumerate(nodes)}
         
@@ -363,8 +371,9 @@ class DirectedSheafBuilder:
         """
         directed_restrictions = {}
         
-        # Create node ordering for indexing
-        nodes = list(poset.nodes())
+        # Create canonical node ordering for indexing
+        from ...utils.indexing import canonical_node_order
+        nodes = canonical_node_order(poset.nodes())
         node_to_idx = {node: i for i, node in enumerate(nodes)}
         
         for edge, base_restriction in base_restrictions.items():
@@ -531,10 +540,15 @@ class DirectedSheafBuilder:
             magnitudes = torch.abs(directional_encoding)
             # For edges, magnitude should be 1; for non-edges, should be 0
             edge_magnitudes = []
+            
+            # Use canonical ordering for consistent indexing
+            from ...utils.indexing import canonical_node_order
+            nodes = canonical_node_order(poset.nodes())
+            node_to_idx = {node: i for i, node in enumerate(nodes)}
+            
             for u, v in poset.edges():
-                nodes = list(poset.nodes())
-                u_idx = nodes.index(u)
-                v_idx = nodes.index(v)
+                u_idx = node_to_idx[u]
+                v_idx = node_to_idx[v]
                 edge_magnitudes.append(magnitudes[u_idx, v_idx].item())
             
             # Check that edge magnitudes are close to 1

@@ -1,0 +1,45 @@
+\begin{table}[h!]
+\centering
+\caption{Cluster Analysis Results: Training Labels}
+\label{tab:cluster_training}
+
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{Internal Quality}} \\
+Silhouette Coefficient & 0.548 & [0.428, 0.699] \\
+Davies-Bouldin Index & 0.666 & [0.533, 0.800] \\
+Calinski-Harabasz & 67 & [40, 108] \\
+Dunn Index & 0.051 & [0.051, 0.660] \\
+Cophenetic Correlation & 0.947 & [0.897, 0.997] \\
+\midrule
+\multicolumn{3}{l}{\textbf{Hypothesis Tests}} \\
+PERMANOVA F & 69.14 & $p = 0.00e+00$ \\
+ANOSIM R & 1.561 & $p = 0.00e+00$ \\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Metric & Value & 95\% CI \\
+\midrule
+\multicolumn{3}{l}{\textbf{External Validation}} \\
+Adjusted Rand Index & 0.715 & [0.665, 0.765] \\
+Adjusted Mutual Info & 0.678 & [0.628, 0.728] \\
+V-measure & 0.684 & [0.634, 0.734] \\
+\midrule
+\multicolumn{3}{l}{\textbf{Effect Sizes}} \\
+Cohen's $d$ & 1.864 & -- \\
+\midrule
+\multicolumn{3}{l}{\textbf{Stability}} \\
+Jaccard Stability & 0.520 & [0.000, 1.000] \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+
+\end{table}
